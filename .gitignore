@@ -34,3 +34,4 @@ results/
 thirdparty/ncore/
 
 playground/assets/
+**/assets/*.jpeg
