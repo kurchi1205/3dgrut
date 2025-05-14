@@ -42,6 +42,8 @@ from threedgrut.utils.logger import logger
 from threedgrut.utils.timer import CudaTimer
 from threedgrut.utils.misc import jet_map, create_summary_writer, check_step_condition
 from threedgrut.optimizers import SelectiveAdam
+from threedgrut.heatmap.heatmap import ScreenSpaceHeatmap
+from threedgrut.heatmap.render_utils import project_to_screen_space, save_tensor_image
 
 class Trainer3DGRUT:
     """Trainer for paper: "3D Gaussian Ray Tracing: Fast Tracing of Particle Scenes" """
@@ -676,7 +678,7 @@ class Trainer3DGRUT:
                 logger.warning("Terminating training from GUI window is not supported. Please terminate it from the terminal.")
 
     @torch.cuda.nvtx.range(f"run_train_pass")
-    def run_train_pass(self, conf: DictConfig):
+    def run_train_pass(self, conf: DictConfig, save_heatmaps=False):
         """Runs a single train epoch over the dataset."""
         global_step = self.global_step
         model = self.model
@@ -759,6 +761,35 @@ class Trainer3DGRUT:
                     profilers["build_as"].start()
                     model.build_acc(rebuild=True)
                     profilers["build_as"].end()
+
+            # Generate the heatmap
+            # heatmap_gen.clear()
+            if save_heatmaps:
+                positions = model.get_positions()  # [N, 3]
+                importance = self.strategy.densify_grad_norm_accum / (self.strategy.densify_grad_norm_denom + 1e-8)
+                intrinsics = torch.tensor(self.train_dataset.K)
+                # importance = importance.squeeze()
+                save_tensor_image(batch["data"][0], f"assets/{iter}_1_image.jpeg")
+                for b in range(len(batch["data"])):
+                    # Step 1: Get extrinsics for image b
+                    heatmap_gen = ScreenSpaceHeatmap(image_size=(800, 800))
+                    T_cam_to_world = gpu_batch.T_to_world[b]  # [3, 4]
+                    R = T_cam_to_world[:, :3]
+                    t = T_cam_to_world[:, 3:]
+                    R_inv = R.T
+                    t_inv = -R_inv @ t
+                    extrinsics = torch.eye(4, device=R.device)
+                    extrinsics[:3, :3] = R_inv
+                    extrinsics[:3, 3] = t_inv.squeeze()
+
+                    # Step 2: Project 3D positions
+                    uv = project_to_screen_space(positions, torch.tensor(intrinsics, device=R.device), extrinsics)
+
+                    # Step 3: Build heatmap
+                    heatmap_gen.clear()
+                    heatmap_gen.accumulate(uv, importance)
+                    # heatmap_gen.normalize()
+                    heatmap_gen.save(f"assets/{iter}_{b}_heatmap.jpeg")
 
             # Increment the global step
             self.global_step += 1
@@ -857,7 +888,10 @@ class Trainer3DGRUT:
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
 
         for epoch_idx in range(self.n_epochs):
-            self.run_train_pass(conf)
+            if epoch_idx < 100:
+                self.run_train_pass(conf)
+            else:
+                self.run_train_pass(conf, save_heatmaps=True)
 
         logger.end_progress(task_name="Training")
 
