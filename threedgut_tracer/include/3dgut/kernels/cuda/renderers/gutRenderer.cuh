@@ -104,13 +104,13 @@ __global__ void render(threedgut::RenderParameters params,
 
     // Call updated eval with multi-sampling support
     TGUTRenderer::eval(params,
-                       ray,
-                       sortedTileRangeIndicesPtr,
-                       sortedTileDataPtr,
-                       particlesProjectedPositionPtr,
-                       particlesProjectedConicOpacityPtr,
-                       particlesGlobalDepthPtr,
-                       particlesPrecomputedFeaturesPtr,
+                        ray,
+                        sortedTileRangeIndicesPtr,
+                        sortedTileDataPtr,
+                        particlesProjectedPositionPtr,
+                        particlesProjectedConicOpacityPtr,
+                        particlesGlobalDepthPtr,
+                        particlesPrecomputedFeaturesPtr,
                         {parameterMemoryHandles},
                         sampleCounts,
                         sampleOffsets,
@@ -140,7 +140,11 @@ __global__ void renderBackward(threedgut::RenderParameters params,
                                tcnn::vec4* __restrict__ particlesProjectedConicOpacityGradPtr,
                                float* __restrict__ particlesGlobalDepthGradPtr,
                                float* __restrict__ particlesPrecomputedFeaturesGradPtr,
-                               const uint64_t* __restrict__ parameterGradientMemoryHandles) {
+                               const uint64_t* __restrict__ parameterGradientMemoryHandles
+                               // Multi-sampling parameters
+                               const int* __restrict__ sampleCounts,
+                               const float* __restrict__ sampleOffsets,
+                               const float* __restrict__ sampleWeights) {
 
     auto ray = initializeBackwardRay<TGUTRenderer::TRayPayloadBackward>(params,
                                                                         sensorRayOriginPtr,
@@ -162,6 +166,10 @@ __global__ void renderBackward(threedgut::RenderParameters params,
                                particlesGlobalDepthPtr,
                                particlesPrecomputedFeaturesPtr,
                                {parameterMemoryHandles},
+                               // Multi-sampling parameters
+                               sampleCounts,
+                               sampleOffsets,
+                               sampleWeights,
                                particlesProjectedPositionGradPtr,
                                particlesProjectedConicOpacityGradPtr,
                                particlesGlobalDepthGradPtr,
@@ -198,4 +206,226 @@ __global__ void projectBackward(tcnn::uvec2 tileGrid,
                                 particlesPrecomputedFeaturesPtr,
                                 particlesPrecomputedFeaturesGradPtr,
                                 {parameterGradientMemoryHandles});
+}
+
+__global__ void accumulateGradientHeatmap(
+    const uint32_t numParticles,
+    const vec2* __restrict__ projectedPositions,
+    const float* __restrict__ gradientMagnitudes,
+    const uvec2 heatmapSize,
+    const int downscale,
+    float* __restrict__ gradientHeatmap
+) {
+    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numParticles) return;
+    
+    // Get projected position and gradient magnitude
+    vec2 pos = projectedPositions[idx];
+    float magnitude = gradientMagnitudes[idx];
+    
+    // Convert to heatmap coordinates
+    int hx = (int)(pos.x / downscale);
+    int hy = (int)(pos.y / downscale);
+    
+    // Bounds check
+    if (hx >= 0 && hx < heatmapSize.x && hy >= 0 && hy < heatmapSize.y) {
+        int heatmapIdx = hy * heatmapSize.x + hx;
+        atomicAdd(&gradientHeatmap[heatmapIdx], magnitude);
+    }
+}
+
+__global__ void detectOverlappingParticles(
+    const uint32_t numParticles,
+    const vec2* __restrict__ projectedPositions,
+    const float* __restrict__ depths,
+    const float spatialRadius,
+    const float depthThreshold,
+    int* __restrict__ overlappingIndices,
+    int* __restrict__ overlappingCounts
+) {
+    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numParticles) return;
+    
+    vec2 myPos = projectedPositions[idx];
+    float myDepth = depths[idx];
+    int overlapCount = 0;
+    
+    // Check all other particles (simplified - in practice use spatial grid)
+    for (uint32_t j = 0; j < numParticles; j++) {
+        if (j == idx) continue;
+        
+        vec2 otherPos = projectedPositions[j];
+        float otherDepth = depths[j];
+        
+        float distance = length(myPos - otherPos);
+        float depthDiff = fabsf(myDepth - otherDepth);
+        
+        if (distance < spatialRadius && depthDiff < depthThreshold) {
+            if (overlapCount < 8) {  // Max 8 overlaps tracked
+                overlappingIndices[idx * 8 + overlapCount] = j;
+                overlapCount++;
+            }
+        }
+    }
+    
+    overlappingCounts[idx] = overlapCount;
+}
+
+
+__global__ void computeAdaptiveSampleCounts(
+    const uint32_t numParticles,
+    const vec2* __restrict__ projectedPositions,
+    const float* __restrict__ gradientHeatmap,
+    const uvec2 heatmapSize,
+    const int downscale,
+    const int* __restrict__ overlappingCounts,
+    int* __restrict__ sampleCounts,
+    float* __restrict__ sampleOffsets,
+    float* __restrict__ sampleWeights
+) {
+    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numParticles) return;
+    
+    // Get position in heatmap
+    vec2 pos = projectedPositions[idx];
+    int hx = (int)(pos.x / downscale);
+    int hy = (int)(pos.y / downscale);
+    
+    // Get gradient value at this position
+    float gradientValue = 0.0f;
+    if (hx >= 0 && hx < heatmapSize.x && hy >= 0 && hy < heatmapSize.y) {
+        gradientValue = gradientHeatmap[hy * heatmapSize.x + hx];
+    }
+    
+    // Normalize gradient (simplified - in practice track max)
+    gradientValue = fminf(gradientValue / MultiSampleParameters::GradientThreshold, 1.0f);
+    
+    // Determine sample count based on gradient and overlaps
+    int baseSamples = MultiSampleParameters::BaseSamples;
+    int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
+    int overlapCount = overlappingCounts[idx];
+    
+    // More samples for high gradient or overlapping regions
+    int samples = baseSamples;
+    if (gradientValue > 0.5f || overlapCount > 0) {
+        samples = baseSamples + (int)((maxSamples - baseSamples) * gradientValue);
+        samples = max(samples, baseSamples + overlapCount);
+        samples = min(samples, maxSamples);
+    }
+    
+    sampleCounts[idx] = samples;
+    
+    // Generate sample offsets and weights
+    if (samples > 1) {
+        float range = MultiSampleParameters::SampleRange;
+        for (int s = 0; s < samples; s++) {
+            float t = (float)s / (float)(samples - 1);  // 0 to 1
+            float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
+            sampleOffsets[idx * maxSamples + s] = offset;
+            
+            // Gaussian weights centered at 0
+            float sigma = range / 3.0f;
+            float weight = expf(-0.5f * (offset * offset) / (sigma * sigma));
+            sampleWeights[idx * maxSamples + s] = weight;
+        }
+        
+        // Normalize weights
+        float weightSum = 0.0f;
+        for (int s = 0; s < samples; s++) {
+            weightSum += sampleWeights[idx * maxSamples + s];
+        }
+        for (int s = 0; s < samples; s++) {
+            sampleWeights[idx * maxSamples + s] /= weightSum;
+        }
+    } else {
+        sampleOffsets[idx * maxSamples] = 0.0f;
+        sampleWeights[idx * maxSamples] = 1.0f;
+    }
+}
+
+
+__global__ void renderWithMultiSampling(
+    const RenderParameters params,
+    const uvec2* __restrict__ sortedTileRangeIndices,
+    const uint32_t* __restrict__ sortedTileParticleIdx,
+    const vec3* __restrict__ sensorRayOrigin,
+    const vec3* __restrict__ sensorRayDirection,
+    const mat4 sensorToWorldTransform,
+    float* worldHitCount,
+    float* worldHitDistance,
+    vec4* radianceDensity,
+    const vec2* __restrict__ particlesProjectedPosition,
+    const vec4* __restrict__ particlesProjectedConicOpacity,
+    const float* __restrict__ particlesGlobalDepth,
+    const float* __restrict__ particlesPrecomputedFeatures,
+    const uint64_t* dptrParametersBuffer,
+    // New parameters for multi-sampling
+    const int* __restrict__ sampleCounts,
+    const float* __restrict__ sampleOffsets,
+    const float* __restrict__ sampleWeights
+) {
+    // Get pixel coordinates
+    const uvec2 ij = uvec2(blockIdx.x * blockDim.x + threadIdx.x, 
+                          blockIdx.y * blockDim.y + threadIdx.y);
+    if (ij.x >= params.resolution.x || ij.y >= params.resolution.y) return;
+    
+    // Get ray for this pixel
+    const uint32_t pixelIdx = ij.y * params.resolution.x + ij.x;
+    const vec3 rayOrigin = sensorRayOrigin[pixelIdx];
+    const vec3 rayDirection = normalize(sensorRayDirection[pixelIdx]);
+    
+    // Get particle range for this tile
+    const uvec2 tileIdx = uvec2(blockIdx.x, blockIdx.y);
+    const uint32_t tileId = tileIdx.x + tileIdx.y * gridDim.x;
+    const uvec2 tileParticleRange = sortedTileRangeIndices[tileId];
+    
+    vec4 accumulatedColor = vec4(0.0f);
+    float transmittance = 1.0f;
+    
+    // Process each particle in the tile
+    for (uint32_t i = tileParticleRange.x; i < tileParticleRange.y; i++) {
+        const uint32_t particleIdx = sortedTileParticleIdx[i];
+        
+        // Get particle data
+        vec2 projPos = particlesProjectedPosition[particleIdx];
+        vec4 conicOpacity = particlesProjectedConicOpacity[particleIdx];
+        float baseDepth = particlesGlobalDepth[particleIdx];
+        
+        // Multi-sample evaluation
+        int samples = sampleCounts[particleIdx];
+        vec4 totalContribution = vec4(0.0f);
+        
+        for (int s = 0; s < samples; s++) {
+            float depthOffset = sampleOffsets[particleIdx * MultiSampleParameters::MaxSamplesPerGaussian + s];
+            float sampleWeight = sampleWeights[particleIdx * MultiSampleParameters::MaxSamplesPerGaussian + s];
+            float sampleDepth = baseDepth * (1.0f + depthOffset);
+            
+            // Compute 3D position for this sample
+            vec3 samplePos = rayOrigin + sampleDepth * rayDirection;
+            
+            // Evaluate Gaussian at this sample position
+            // (This is simplified - actual implementation would evaluate the full Gaussian)
+            vec4 contribution = evaluateGaussianAtPosition(
+                particleIdx, 
+                samplePos, 
+                conicOpacity,
+                particlesPrecomputedFeatures,
+                dptrParametersBuffer
+            );
+            
+            totalContribution += contribution * sampleWeight;
+        }
+        
+        // Alpha compositing
+        vec4 color = totalContribution;
+        float alpha = 1.0f - expf(-color.w);
+        accumulatedColor += transmittance * alpha * vec4(color.xyz, 1.0f);
+        transmittance *= (1.0f - alpha);
+        
+        if (transmittance < 0.001f) break;
+    }
+    
+    radianceDensity[pixelIdx] = accumulatedColor;
+    worldHitCount[pixelIdx] = 1.0f;
+    worldHitDistance[pixelIdx] = 1e6f;  // TODO: Track actual hit distance
 }

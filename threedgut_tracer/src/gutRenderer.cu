@@ -69,6 +69,7 @@ __global__ void computeSortedTileRangeIndices(
     }
 }
 
+
 // TODO : review this
 inline uint32_t higherMsb(uint32_t n) {
     uint32_t msb  = sizeof(n) * 4;
@@ -126,6 +127,30 @@ struct GUTRenderer::GutRenderForwardContext {
     CudaBuffer unsortedTileParticleIdx;
     CudaBuffer sortedTileParticleIdx;
     CudaBuffer sortingWorkingBuffer;
+
+    CudaBuffer particleSampleCounts;              // int [N] samples per particle
+    CudaBuffer particleGradientMagnitudes;        // float [N] gradient magnitudes
+    CudaBuffer overlappingParticleIndices;        // int [N*K] indices of overlapping particles
+    CudaBuffer overlappingParticleCounts;         // int [N] count of overlaps per particle
+    CudaBuffer gradientHeatmap;                   // float [H/downscale, W/downscale]
+    CudaBuffer sampleOffsets;                     // float [N*MaxSamples] depth offsets
+    CudaBuffer sampleWeights;                     // float [N*MaxSamples] sample weights
+
+    Status updateMultiSampleBuffers(int numParticles, uvec2 heatmapSize, cudaStream_t stream, const Logger& logger) {
+        const uint64_t queueHandle = reinterpret_cast<uint64_t>(stream);
+        CHECK_STATUS_RETURN(particleSampleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
+        CHECK_STATUS_RETURN(particleGradientMagnitudes.resize(numParticles * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(overlappingParticleIndices.resize(numParticles * 8 * sizeof(int), queueHandle, logger));
+        CHECK_STATUS_RETURN(overlappingParticleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
+        CHECK_STATUS_RETURN(gradientHeatmap.resize(heatmapSize.x * heatmapSize.y * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(sampleOffsets.resize(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(sampleWeights.resize(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
+        
+        // Initialize to zeros
+        CUDA_CHECK_RETURN(cudaMemsetAsync(particleSampleCounts.data(), 1, numParticles * sizeof(int), stream), logger);
+        CUDA_CHECK_RETURN(cudaMemsetAsync(gradientHeatmap.data(), 0, heatmapSize.x * heatmapSize.y * sizeof(float), stream), logger);
+        return Status();
+    }
 
     Status updateTileSortingBuffers(const uvec2& tileGrid, int numKeys, cudaStream_t stream, const Logger& logger) {
         const uint64_t queueHandle = reinterpret_cast<uint64_t>(stream);
@@ -461,7 +486,11 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             (tcnn::vec4*)m_forwardContext->particlesProjectedConicOpacityGradient.data(),
             (float*)m_forwardContext->particlesGlobalDepthGradient.data(),
             (float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
-            parameters.m_dptrGradientsBuffer);
+            parameters.m_dptrGradientsBuffer,
+            // Multi-sampling parameters (null if not enabled)
+            m_multiSamplingEnabled ? (const int*)m_forwardContext->particleSampleCounts.data() : nullptr,
+            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleOffsets.data() : nullptr,
+            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr);
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
     }
 
