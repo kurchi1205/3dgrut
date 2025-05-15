@@ -31,4 +31,13 @@ struct GUTParameters {
     static constexpr uint32_t InvalidParticleIdx = -1U;
 };
 
+struct MultiSampleParameters {
+    static constexpr int MaxSamplesPerGaussian = 8;
+    static constexpr int BaseSamples = 1;
+    static constexpr float GradientThreshold = 0.3f;
+    static constexpr float OverlapThreshold = 0.1f;
+    static constexpr float SampleRange = 0.1f;  // Sample within 10% of depth
+};
+
+
 } // namespace threedgut
