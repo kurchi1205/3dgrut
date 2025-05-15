@@ -290,6 +290,47 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
         CHECK_STATUS_RETURN(m_forwardContext->updateParticlesFeaturesBuffer(numParticles * featuresDim(), cudaStream, m_logger));
     }
 
+     // Multi-sampling initialization
+    const uvec2 heatmapSize{
+        params.resolution.x / 4,
+        params.resolution.y / 4
+    };
+
+    CHECK_STATUS_RETURN(m_forwardContext->updateMultiSampleBuffers(
+        numParticles, heatmapSize, cudaStream, m_logger));
+
+
+    if (m_multiSamplingEnabled && m_forwardContext->particlesPrecomputedFeaturesGradient.size() > 0) {
+        const auto gradientProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::gradient_heatmap"};
+        
+        const uint32_t featureDim = featuresDim();
+        constexpr int threadsPerBlock = 256;
+        
+        computeGradientMagnitudes<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+            numParticles,
+            featureDim,
+            (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
+            (float*)m_forwardContext->particleGradientMagnitudes.data()
+        );
+        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+        
+        CUDA_CHECK_RETURN(cudaMemsetAsync(
+            m_forwardContext->gradientHeatmap.data(), 
+            0, 
+            heatmapSize.x * heatmapSize.y * sizeof(float), 
+            cudaStream), m_logger);
+        
+        accumulateGradientHeatmap<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+            numParticles,
+            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+            (const float*)m_forwardContext->particleGradientMagnitudes.data(),
+            heatmapSize,
+            4,
+            (float*)m_forwardContext->gradientHeatmap.data()
+        );
+        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+    }
+
     {
         const auto projectProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::project"};
         ::projectOnTiles<<<div_round_up(numParticles, GUTParameters::Tiling::BlockSize), GUTParameters::Tiling::BlockSize, 0, cudaStream>>>(
@@ -312,6 +353,32 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
             parameters.m_dptrParametersBuffer);
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
     }
+
+    // Multi-sampling preprocessing
+    if (m_multiSamplingEnabled) {
+        detectOverlappingParticles<<<div_round_up(numParticles, 256), 256, 0, cudaStream>>>(
+            numParticles,
+            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+            (const float*)m_forwardContext->particlesGlobalDepth.data(),
+            10.0f,  // spatial radius
+            0.1f,   // depth threshold
+            (int*)m_forwardContext->overlappingParticleIndices.data(),
+            (int*)m_forwardContext->overlappingParticleCounts.data()
+        );
+        
+        computeAdaptiveSampleCounts<<<div_round_up(numParticles, 256), 256, 0, cudaStream>>>(
+            numParticles,
+            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+            (const float*)m_forwardContext->gradientHeatmap.data(),
+            heatmapSize,
+            4,
+            (const int*)m_forwardContext->overlappingParticleCounts.data(),
+            (int*)m_forwardContext->particleSampleCounts.data(),
+            (float*)m_forwardContext->sampleOffsets.data(),
+            (float*)m_forwardContext->sampleWeights.data()
+        );
+    }
+
 
     deviceLaunchesLogger.push("render::prepare-expand");
 
@@ -393,9 +460,12 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
 
     deviceLaunchesLogger.pop("render::sort");
 
+    // Render with multi-sampling
     {
         const auto renderProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::render"};
-        ::render<<<dim3{tileGrid.x, tileGrid.y, 1u}, dim3{GUTParameters::Tiling::BlockX, GUTParameters::Tiling::BlockY, 1u}, 0, cudaStream>>>(
+        ::render<<<dim3{tileGrid.x, tileGrid.y, 1u}, 
+                  dim3{GUTParameters::Tiling::BlockX, GUTParameters::Tiling::BlockY, 1u}, 
+                  0, cudaStream>>>(
             params,
             (const tcnn::uvec2*)m_forwardContext->sortedTileRangeIndices.data(),
             (const uint32_t*)m_forwardContext->sortedTileParticleIdx.data(),
@@ -409,7 +479,11 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
             (const tcnn::vec4*)m_forwardContext->particlesProjectedConicOpacity.data(),
             (const float*)m_forwardContext->particlesGlobalDepth.data(),
             (const float*)m_forwardContext->particlesPrecomputedFeatures.data(),
-            parameters.m_dptrParametersBuffer);
+            parameters.m_dptrParametersBuffer,
+            m_multiSamplingEnabled ? (const int*)m_forwardContext->particleSampleCounts.data() : nullptr,
+            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleOffsets.data() : nullptr,
+            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr
+        );
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
     }
 
@@ -462,9 +536,52 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             m_forwardContext->updateParticlesProjectionGradientBuffers(numParticles, cudaStream, m_logger));
     }
 
+    // Multi-sampling gradient processing for next iteration
+    // NOTE: We compute gradient magnitudes and update heatmap from the backward pass
+    // This will be used in the next forward pass
+    if (m_multiSamplingEnabled && m_forwardContext->particlesPrecomputedFeaturesGradient.size() > 0) {
+        const auto gradientProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render-backward::gradient_processing"};
+        
+        const uint32_t featureDim = featuresDim();
+        constexpr int threadsPerBlock = 256;
+        
+        // Compute gradient magnitudes from this backward pass
+        computeGradientMagnitudes<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+            numParticles,
+            featureDim,
+            (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
+            (float*)m_forwardContext->particleGradientMagnitudes.data()
+        );
+        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+        
+        // Update gradient heatmap for next iteration
+        const uvec2 heatmapSize{
+            params.resolution.x / 4,
+            params.resolution.y / 4
+        };
+        
+        CUDA_CHECK_RETURN(cudaMemsetAsync(
+            m_forwardContext->gradientHeatmap.data(), 
+            0, 
+            heatmapSize.x * heatmapSize.y * sizeof(float), 
+            cudaStream), m_logger);
+        
+        accumulateGradientHeatmap<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+            numParticles,
+            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+            (const float*)m_forwardContext->particleGradientMagnitudes.data(),
+            heatmapSize,
+            4,
+            (float*)m_forwardContext->gradientHeatmap.data()
+        );
+        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+    }
+
     {
         const auto renderProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render-backward::render"};
-        ::renderBackward<<<dim3{tileGrid.x, tileGrid.y, 1u}, dim3{GUTParameters::Tiling::BlockX, GUTParameters::Tiling::BlockY, 1u}, 0, cudaStream>>>(
+        ::renderBackward<<<dim3{tileGrid.x, tileGrid.y, 1u}, 
+                          dim3{GUTParameters::Tiling::BlockX, GUTParameters::Tiling::BlockY, 1u}, 
+                          0, cudaStream>>>(
             params,
             (const tcnn::uvec2*)m_forwardContext->sortedTileRangeIndices.data(),
             (const uint32_t*)m_forwardContext->sortedTileParticleIdx.data(),
@@ -476,7 +593,7 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             (const tcnn::vec4*)radianceDensityCudaPtr,         //
             (const tcnn::vec4*)radianceDensityGradientCudaPtr, // TODO: not implemented yet
             (tcnn::vec3*)worldRayOriginGradientCudaPtr,        // TODO: not implemented yet
-            (tcnn::vec3*)worldRayDirectionGradientCudaPtr,     // TODO: not implemented yet
+            (tcnn::vec3*)worldRayDirectionGradientCudaPtr,
             (const tcnn::vec2*)m_forwardContext->particlesProjectedPosition.data(),
             (const tcnn::vec4*)m_forwardContext->particlesProjectedConicOpacity.data(),
             (const float*)m_forwardContext->particlesGlobalDepth.data(),
@@ -487,12 +604,14 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             (float*)m_forwardContext->particlesGlobalDepthGradient.data(),
             (float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
             parameters.m_dptrGradientsBuffer,
-            // Multi-sampling parameters (null if not enabled)
+            // Multi-sampling parameters - use same configuration from forward pass
             m_multiSamplingEnabled ? (const int*)m_forwardContext->particleSampleCounts.data() : nullptr,
             m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleOffsets.data() : nullptr,
-            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr);
+            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr
+        );
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
     }
+
 
     if (!/*m_settings.perRayFeatures*/ TGUTRendererParams::PerRayParticleFeatures) {
         const auto projectProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render-backward::project"};

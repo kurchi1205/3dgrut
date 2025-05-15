@@ -344,88 +344,19 @@ __global__ void computeAdaptiveSampleCounts(
 }
 
 
-__global__ void renderWithMultiSampling(
-    const RenderParameters params,
-    const uvec2* __restrict__ sortedTileRangeIndices,
-    const uint32_t* __restrict__ sortedTileParticleIdx,
-    const vec3* __restrict__ sensorRayOrigin,
-    const vec3* __restrict__ sensorRayDirection,
-    const mat4 sensorToWorldTransform,
-    float* worldHitCount,
-    float* worldHitDistance,
-    vec4* radianceDensity,
-    const vec2* __restrict__ particlesProjectedPosition,
-    const vec4* __restrict__ particlesProjectedConicOpacity,
-    const float* __restrict__ particlesGlobalDepth,
-    const float* __restrict__ particlesPrecomputedFeatures,
-    const uint64_t* dptrParametersBuffer,
-    // New parameters for multi-sampling
-    const int* __restrict__ sampleCounts,
-    const float* __restrict__ sampleOffsets,
-    const float* __restrict__ sampleWeights
+__global__ void computeGradientMagnitudes(
+    const uint32_t numParticles,
+    const uint32_t featureDim,
+    const float* __restrict__ gradients,
+    float* __restrict__ magnitudes
 ) {
-    // Get pixel coordinates
-    const uvec2 ij = uvec2(blockIdx.x * blockDim.x + threadIdx.x, 
-                          blockIdx.y * blockDim.y + threadIdx.y);
-    if (ij.x >= params.resolution.x || ij.y >= params.resolution.y) return;
+    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numParticles) return;
     
-    // Get ray for this pixel
-    const uint32_t pixelIdx = ij.y * params.resolution.x + ij.x;
-    const vec3 rayOrigin = sensorRayOrigin[pixelIdx];
-    const vec3 rayDirection = normalize(sensorRayDirection[pixelIdx]);
-    
-    // Get particle range for this tile
-    const uvec2 tileIdx = uvec2(blockIdx.x, blockIdx.y);
-    const uint32_t tileId = tileIdx.x + tileIdx.y * gridDim.x;
-    const uvec2 tileParticleRange = sortedTileRangeIndices[tileId];
-    
-    vec4 accumulatedColor = vec4(0.0f);
-    float transmittance = 1.0f;
-    
-    // Process each particle in the tile
-    for (uint32_t i = tileParticleRange.x; i < tileParticleRange.y; i++) {
-        const uint32_t particleIdx = sortedTileParticleIdx[i];
-        
-        // Get particle data
-        vec2 projPos = particlesProjectedPosition[particleIdx];
-        vec4 conicOpacity = particlesProjectedConicOpacity[particleIdx];
-        float baseDepth = particlesGlobalDepth[particleIdx];
-        
-        // Multi-sample evaluation
-        int samples = sampleCounts[particleIdx];
-        vec4 totalContribution = vec4(0.0f);
-        
-        for (int s = 0; s < samples; s++) {
-            float depthOffset = sampleOffsets[particleIdx * MultiSampleParameters::MaxSamplesPerGaussian + s];
-            float sampleWeight = sampleWeights[particleIdx * MultiSampleParameters::MaxSamplesPerGaussian + s];
-            float sampleDepth = baseDepth * (1.0f + depthOffset);
-            
-            // Compute 3D position for this sample
-            vec3 samplePos = rayOrigin + sampleDepth * rayDirection;
-            
-            // Evaluate Gaussian at this sample position
-            // (This is simplified - actual implementation would evaluate the full Gaussian)
-            vec4 contribution = evaluateGaussianAtPosition(
-                particleIdx, 
-                samplePos, 
-                conicOpacity,
-                particlesPrecomputedFeatures,
-                dptrParametersBuffer
-            );
-            
-            totalContribution += contribution * sampleWeight;
-        }
-        
-        // Alpha compositing
-        vec4 color = totalContribution;
-        float alpha = 1.0f - expf(-color.w);
-        accumulatedColor += transmittance * alpha * vec4(color.xyz, 1.0f);
-        transmittance *= (1.0f - alpha);
-        
-        if (transmittance < 0.001f) break;
+    float magnitude = 0.0f;
+    for (uint32_t i = 0; i < featureDim; i++) {
+        float grad = gradients[idx * featureDim + i];
+        magnitude += grad * grad;
     }
-    
-    radianceDensity[pixelIdx] = accumulatedColor;
-    worldHitCount[pixelIdx] = 1.0f;
-    worldHitDistance[pixelIdx] = 1e6f;  // TODO: Track actual hit distance
+    magnitudes[idx] = sqrtf(magnitude);
 }
