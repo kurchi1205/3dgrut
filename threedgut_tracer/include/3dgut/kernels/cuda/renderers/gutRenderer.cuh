@@ -93,11 +93,16 @@ __global__ void render(threedgut::RenderParameters params,
                        const tcnn::vec4* __restrict__ particlesProjectedConicOpacityPtr,
                        const float* __restrict__ particlesGlobalDepthPtr,
                        const float* __restrict__ particlesPrecomputedFeaturesPtr,
-                       const uint64_t* __restrict__ parameterMemoryHandles) {
+                       const uint64_t* __restrict__ parameterMemoryHandles,
+                       // New multi-sampling parameters
+                       const int* __restrict__ sampleCounts,
+                       const float* __restrict__ sampleOffsets,
+                       const float* __restrict__ sampleWeights) {
 
     auto ray = initializeRay<TGUTRenderer::TRayPayload>(
         params, sensorRayOriginPtr, sensorRayDirectionPtr, sensorToWorldTransform);
 
+    // Call updated eval with multi-sampling support
     TGUTRenderer::eval(params,
                        ray,
                        sortedTileRangeIndicesPtr,
@@ -106,11 +111,11 @@ __global__ void render(threedgut::RenderParameters params,
                        particlesProjectedConicOpacityPtr,
                        particlesGlobalDepthPtr,
                        particlesPrecomputedFeaturesPtr,
-                       {parameterMemoryHandles});
+                        {parameterMemoryHandles},
+                        sampleCounts,
+                        sampleOffsets,
+                        sampleWeights);
 
-    // TGUTModel::eval(params, ray, {parameterMemoryHandles});
-
-    // NB : finalize ray is not differentiable (has to be no-op when used in a differentiable renderer)
     finalizeRay(ray, params, sensorRayOriginPtr, worldHitCountPtr, worldHitDistancePtr, radianceDensityPtr, sensorToWorldTransform);
 }
 
