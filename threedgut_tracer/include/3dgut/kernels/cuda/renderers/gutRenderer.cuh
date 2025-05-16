@@ -207,7 +207,9 @@ __global__ void projectBackward(tcnn::uvec2 tileGrid,
                                 particlesPrecomputedFeaturesGradPtr,
                                 {parameterGradientMemoryHandles});
 }
-
+'''
+projects each particles gradient to the screen space heatmap and accumulates it for each pixel
+'''
 __global__ void accumulateGradientHeatmap(
     const uint32_t numParticles,
     const vec2* __restrict__ projectedPositions,
@@ -234,6 +236,9 @@ __global__ void accumulateGradientHeatmap(
     }
 }
 
+'''
+find  overlapping particles based on the depth and spatial distance, for now 8 other overlapping particles
+'''
 __global__ void detectOverlappingParticles(
     const uint32_t numParticles,
     const vec2* __restrict__ projectedPositions,
@@ -271,6 +276,10 @@ __global__ void detectOverlappingParticles(
     overlappingCounts[idx] = overlapCount;
 }
 
+'''
+calculate the number of samples from gradient and number of overlapping particles. Range is set to 10 percent of the depth range.
+Offset is evenly distributed. weights are normally distributed, that is highest weight is at the depth of the gaussian.
+'''
 
 __global__ void computeAdaptiveSampleCounts(
     const uint32_t numParticles,
@@ -343,7 +352,9 @@ __global__ void computeAdaptiveSampleCounts(
     }
 }
 
-
+'''
+for each particle computes the L2 norm of the gradient vector
+'''
 __global__ void computeGradientMagnitudes(
     const uint32_t numParticles,
     const uint32_t featureDim,

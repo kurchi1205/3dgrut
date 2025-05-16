@@ -213,7 +213,7 @@ struct GUTKBufferRenderer : Params {
             particles.initializeFeaturesGradient(parametersGradient);
         }
 
-        // Use modified versions without changing the Particles class
+        // New eval functions with multi-sampling
         if constexpr (Backward && (Params::KHitBufferSize == 0)) {
             evalBackwardNoKBufferWithMultiSamplingNoClass(ray, particles, tileParticleRangeIndices, tileNumBlocksToProcess, tileNumParticlesToProcess, tileThreadIdx,
                                                         sortedTileParticleIdxPtr, particleFeaturesBuffer, particleFeaturesGradientBuffer,
@@ -284,7 +284,9 @@ struct GUTKBufferRenderer : Params {
                     float totalAlpha = 0.0f;
                     float avgHitT = 0.0f;
                     float totalWeight = 0.0f;
-                    
+                    '''
+                    moves the original ray by different offset and check whether they are hitting the gaussian
+                    '''
                     for (int s = 0; s < numSamples; s++) {
                         const int sampleIdx = particleData.idx * maxSamples + s;
                         const float depthOffset = sampleOffsetsPtr[sampleIdx];
