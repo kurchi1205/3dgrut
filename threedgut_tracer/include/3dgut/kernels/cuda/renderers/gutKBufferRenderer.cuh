@@ -284,9 +284,9 @@ struct GUTKBufferRenderer : Params {
                     float totalAlpha = 0.0f;
                     float avgHitT = 0.0f;
                     float totalWeight = 0.0f;
-                    '''
-                    moves the original ray by different offset and check whether they are hitting the gaussian
-                    '''
+                    
+                    //moves the original ray by different offset and check whether they are hitting the gaussian
+                    
                     for (int s = 0; s < numSamples; s++) {
                         const int sampleIdx = particleData.idx * maxSamples + s;
                         const float depthOffset = sampleOffsetsPtr[sampleIdx];
@@ -442,6 +442,7 @@ struct GUTKBufferRenderer : Params {
                 TFeaturesVec featuresGrad = TFeaturesVec::zero();
 
                 if (ray.isAlive()) {
+
                     if (multiSamplingEnabled) {
                         // Multi-sampling backward pass without modifying Particles class
                         const int numSamples = sampleCountsPtr[particleData.idx];
@@ -458,6 +459,7 @@ struct GUTKBufferRenderer : Params {
                             TFeaturesVec sampleFeaturesGrad = TFeaturesVec::zero();
                             
                             // Create offset ray for this sample
+
                             tcnn::vec3 offsetRayOrigin = ray.origin;
                             tcnn::vec3 offsetRayDirection = ray.direction;
                             float offsetDistance = depthOffset * length(offsetRayDirection);

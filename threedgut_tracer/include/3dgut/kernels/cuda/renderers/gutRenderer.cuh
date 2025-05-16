@@ -140,7 +140,7 @@ __global__ void renderBackward(threedgut::RenderParameters params,
                                tcnn::vec4* __restrict__ particlesProjectedConicOpacityGradPtr,
                                float* __restrict__ particlesGlobalDepthGradPtr,
                                float* __restrict__ particlesPrecomputedFeaturesGradPtr,
-                               const uint64_t* __restrict__ parameterGradientMemoryHandles
+                               const uint64_t* __restrict__ parameterGradientMemoryHandles,
                                // Multi-sampling parameters
                                const int* __restrict__ sampleCounts,
                                const float* __restrict__ sampleOffsets,
@@ -207,14 +207,13 @@ __global__ void projectBackward(tcnn::uvec2 tileGrid,
                                 particlesPrecomputedFeaturesGradPtr,
                                 {parameterGradientMemoryHandles});
 }
-'''
-projects each particles gradient to the screen space heatmap and accumulates it for each pixel
-'''
+
+//projects each particles gradient to the screen space heatmap and accumulates it for each pixel
 __global__ void accumulateGradientHeatmap(
     const uint32_t numParticles,
-    const vec2* __restrict__ projectedPositions,
+    const tcnn::vec2* __restrict__ projectedPositions,
     const float* __restrict__ gradientMagnitudes,
-    const uvec2 heatmapSize,
+    const tcnn::uvec2 heatmapSize,
     const int downscale,
     float* __restrict__ gradientHeatmap
 ) {
@@ -222,7 +221,7 @@ __global__ void accumulateGradientHeatmap(
     if (idx >= numParticles) return;
     
     // Get projected position and gradient magnitude
-    vec2 pos = projectedPositions[idx];
+    tcnn::vec2 pos = projectedPositions[idx];
     float magnitude = gradientMagnitudes[idx];
     
     // Convert to heatmap coordinates
@@ -236,12 +235,12 @@ __global__ void accumulateGradientHeatmap(
     }
 }
 
-'''
-find  overlapping particles based on the depth and spatial distance, for now 8 other overlapping particles
-'''
+
+//find  overlapping particles based on the depth and spatial distance, for now 8 other overlapping particles
+
 __global__ void detectOverlappingParticles(
     const uint32_t numParticles,
-    const vec2* __restrict__ projectedPositions,
+    const tcnn::vec2* __restrict__ projectedPositions,
     const float* __restrict__ depths,
     const float spatialRadius,
     const float depthThreshold,
@@ -251,7 +250,7 @@ __global__ void detectOverlappingParticles(
     const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= numParticles) return;
     
-    vec2 myPos = projectedPositions[idx];
+    tcnn::vec2 myPos = projectedPositions[idx];
     float myDepth = depths[idx];
     int overlapCount = 0;
     
@@ -259,7 +258,7 @@ __global__ void detectOverlappingParticles(
     for (uint32_t j = 0; j < numParticles; j++) {
         if (j == idx) continue;
         
-        vec2 otherPos = projectedPositions[j];
+        tcnn::vec2 otherPos = projectedPositions[j];
         float otherDepth = depths[j];
         
         float distance = length(myPos - otherPos);
@@ -276,16 +275,16 @@ __global__ void detectOverlappingParticles(
     overlappingCounts[idx] = overlapCount;
 }
 
-'''
-calculate the number of samples from gradient and number of overlapping particles. Range is set to 10 percent of the depth range.
-Offset is evenly distributed. weights are normally distributed, that is highest weight is at the depth of the gaussian.
-'''
+
+// calculate the number of samples from gradient and number of overlapping particles. Range is set to 10 percent of the depth range.
+// Offset is evenly distributed. weights are normally distributed, that is highest weight is at the depth of the gaussian.
+
 
 __global__ void computeAdaptiveSampleCounts(
     const uint32_t numParticles,
-    const vec2* __restrict__ projectedPositions,
+    const tcnn::vec2* __restrict__ projectedPositions,
     const float* __restrict__ gradientHeatmap,
-    const uvec2 heatmapSize,
+    const tcnn::uvec2 heatmapSize,
     const int downscale,
     const int* __restrict__ overlappingCounts,
     int* __restrict__ sampleCounts,
@@ -296,7 +295,7 @@ __global__ void computeAdaptiveSampleCounts(
     if (idx >= numParticles) return;
     
     // Get position in heatmap
-    vec2 pos = projectedPositions[idx];
+    tcnn::vec2 pos = projectedPositions[idx];
     int hx = (int)(pos.x / downscale);
     int hy = (int)(pos.y / downscale);
     
@@ -307,11 +306,11 @@ __global__ void computeAdaptiveSampleCounts(
     }
     
     // Normalize gradient (simplified - in practice track max)
-    gradientValue = fminf(gradientValue / MultiSampleParameters::GradientThreshold, 1.0f);
+    gradientValue = fminf(gradientValue / threedgut::MultiSampleParameters::GradientThreshold, 1.0f);
     
     // Determine sample count based on gradient and overlaps
-    int baseSamples = MultiSampleParameters::BaseSamples;
-    int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
+    int baseSamples = threedgut::MultiSampleParameters::BaseSamples;
+    int maxSamples = threedgut::MultiSampleParameters::MaxSamplesPerGaussian;
     int overlapCount = overlappingCounts[idx];
     
     // More samples for high gradient or overlapping regions
@@ -326,7 +325,7 @@ __global__ void computeAdaptiveSampleCounts(
     
     // Generate sample offsets and weights
     if (samples > 1) {
-        float range = MultiSampleParameters::SampleRange;
+        float range = threedgut::MultiSampleParameters::SampleRange;
         for (int s = 0; s < samples; s++) {
             float t = (float)s / (float)(samples - 1);  // 0 to 1
             float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
@@ -352,9 +351,9 @@ __global__ void computeAdaptiveSampleCounts(
     }
 }
 
-'''
-for each particle computes the L2 norm of the gradient vector
-'''
+
+// for each particle computes the L2 norm of the gradient vector
+
 __global__ void computeGradientMagnitudes(
     const uint32_t numParticles,
     const uint32_t featureDim,

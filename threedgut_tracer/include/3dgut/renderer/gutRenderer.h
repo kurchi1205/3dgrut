@@ -52,7 +52,7 @@ public:
         uint64_t* m_dptrParametersBuffer = nullptr;
         uint64_t* m_dptrGradientsBuffer  = nullptr;
     };
-
+    bool m_multiSamplingEnabled = true;
 private:
     Logger m_logger;
     std::unique_ptr<GutRenderForwardContext> m_forwardContext;

@@ -269,6 +269,7 @@ class Trainer3DGRUT:
 
         self.global_step = global_step
         self.n_epochs = int((conf.n_iterations + len(train_dataset) - 1) / len(train_dataset))
+        print("Epochs: ", self.n_epochs)
 
     def init_gui(
         self,
@@ -789,7 +790,7 @@ class Trainer3DGRUT:
                     heatmap_gen.clear()
                     heatmap_gen.accumulate(uv, importance)
                     # heatmap_gen.normalize()
-                    heatmap_gen.save(f"assets/{iter}_{b}_heatmap.jpeg")
+                    heatmap_gen.save(f"assets/heatmaps/{iter}_{b}_heatmap.jpeg")
 
             # Increment the global step
             self.global_step += 1
@@ -888,10 +889,10 @@ class Trainer3DGRUT:
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
 
         for epoch_idx in range(self.n_epochs):
-            if epoch_idx < 100:
+            if epoch_idx < 6:
                 self.run_train_pass(conf)
             else:
-                self.run_train_pass(conf, save_heatmaps=True)
+                self.run_train_pass(conf, save_heatmaps=False)
 
         logger.end_progress(task_name="Training")
 
