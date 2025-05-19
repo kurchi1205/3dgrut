@@ -327,15 +327,16 @@ struct GUTKBufferRenderer : Params {
                         hitParticle.idx = particleData.idx;
                         hitParticle.alpha = totalAlpha / totalWeight;
                         hitParticle.hitT = avgHitT / totalWeight;
-                        
-                        if (hitParticleKBuffer.full()) {
-                            processHitParticle(ray,
-                                            hitParticleKBuffer.closestHit(hitParticle),
-                                            particles,
-                                            particleFeaturesBuffer,
-                                            particleFeaturesGradientBuffer);
+                        if (hitParticle.hitT > ray.tMinMax.x && hitParticle.hitT < ray.tMinMax.y) {
+                            if (hitParticleKBuffer.full()) {
+                                processHitParticle(ray,
+                                                hitParticleKBuffer.closestHit(hitParticle),
+                                                particles,
+                                                particleFeaturesBuffer,
+                                                particleFeaturesGradientBuffer);
+                            }
+                            hitParticleKBuffer.insert(hitParticle);
                         }
-                        hitParticleKBuffer.insert(hitParticle);
                     }
                 } else {
                     // Original single-sample logic

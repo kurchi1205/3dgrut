@@ -291,9 +291,9 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
     }
 
      // Multi-sampling initialization
-    const uvec2 heatmapSize{
-        params.resolution.x / 4,
-        params.resolution.y / 4
+    const tcnn::uvec2 heatmapSize{
+        params.resolution.x / 4u,
+        params.resolution.y / 4u
     };
 
     CHECK_STATUS_RETURN(m_forwardContext->updateMultiSampleBuffers(
@@ -306,7 +306,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
         const uint32_t featureDim = featuresDim();
         constexpr int threadsPerBlock = 256;
         
-        computeGradientMagnitudes<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        computeGradientMagnitudes<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
             numParticles,
             featureDim,
             (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
@@ -320,7 +320,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
             heatmapSize.x * heatmapSize.y * sizeof(float), 
             cudaStream), m_logger);
         
-        accumulateGradientHeatmap<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        accumulateGradientHeatmap<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
             numParticles,
             (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
             (const float*)m_forwardContext->particleGradientMagnitudes.data(),
@@ -356,7 +356,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
 
     // Multi-sampling preprocessing
     if (m_multiSamplingEnabled) {
-        detectOverlappingParticles<<<div_round_up(numParticles, 256), 256, 0, cudaStream>>>(
+        detectOverlappingParticles<<<div_round_up<uint32_t>(numParticles, 256), 256, 0, cudaStream>>>(
             numParticles,
             (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
             (const float*)m_forwardContext->particlesGlobalDepth.data(),
@@ -366,7 +366,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
             (int*)m_forwardContext->overlappingParticleCounts.data()
         );
         
-        computeAdaptiveSampleCounts<<<div_round_up(numParticles, 256), 256, 0, cudaStream>>>(
+        computeAdaptiveSampleCounts<<<div_round_up<uint32_t>(numParticles, 256), 256, 0, cudaStream>>>(
             numParticles,
             (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
             (const float*)m_forwardContext->gradientHeatmap.data(),
@@ -546,7 +546,7 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
         constexpr int threadsPerBlock = 256;
         
         // Compute gradient magnitudes from this backward pass
-        computeGradientMagnitudes<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        computeGradientMagnitudes<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
             numParticles,
             featureDim,
             (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
@@ -555,9 +555,9 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
         
         // Update gradient heatmap for next iteration
-        const uvec2 heatmapSize{
-            params.resolution.x / 4,
-            params.resolution.y / 4
+        const tcnn::uvec2 heatmapSize{
+            params.resolution.x / 4u,
+            params.resolution.y / 4u
         };
         
         CUDA_CHECK_RETURN(cudaMemsetAsync(
@@ -566,7 +566,7 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             heatmapSize.x * heatmapSize.y * sizeof(float), 
             cudaStream), m_logger);
         
-        accumulateGradientHeatmap<<<div_round_up(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        accumulateGradientHeatmap<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
             numParticles,
             (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
             (const float*)m_forwardContext->particleGradientMagnitudes.data(),
