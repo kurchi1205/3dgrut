@@ -172,6 +172,7 @@ class Tracer:
             mog_sph,
             sensor_params,
             sensor_poses,
+            heatmap
         ):
             particle_density = torch.concat(
                 [mog_pos, mog_dns, mog_rot, mog_scl, torch.zeros_like(mog_dns)], dim=1
@@ -198,6 +199,7 @@ class Tracer:
                 sensor_poses.timestamps_us[1],
                 sensor_poses.T_world_sensors[0],
                 sensor_poses.T_world_sensors[1],
+                heatmap
             )
 
             ctx.save_for_backward(
@@ -301,7 +303,7 @@ class Tracer:
     def build_acc(self, gaussians, rebuild=True):
         pass  # no-op for 3DGUT
 
-    def render(self, gaussians, gpu_batch: Batch, train=False, frame_id=0):
+    def render(self, gaussians, gpu_batch: Batch, train=False, frame_id=0, heatmap=None):
         rays_o = gpu_batch.rays_ori
         rays_d = gpu_batch.rays_dir
 
@@ -327,6 +329,7 @@ class Tracer:
                 gaussians.get_features().contiguous(),
                 sensor,
                 poses,
+                heatmap
             )
 
             pred_rgb = pred_rgba[..., :3].unsqueeze(0).contiguous()

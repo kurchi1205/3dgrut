@@ -566,7 +566,7 @@ class MixtureOfGaussians(torch.nn.Module):
         optimizable_tensors = self.replace_tensor_to_optimizer(updated_densities, "density")
         self.density = optimizable_tensors["density"]
 
-    def forward(self, batch: Batch, train=False, frame_id=0) -> dict[str, torch.Tensor]:
+    def forward(self, batch: Batch, train=False, frame_id=0, heatmap=None) -> dict[str, torch.Tensor]:
         """
         Args:
             batch: a Batch structure containing the input data
@@ -575,7 +575,7 @@ class MixtureOfGaussians(torch.nn.Module):
         Returns:
             A dictionary containing the output of the model
         """
-        return self.renderer.render(self, batch, train, frame_id)
+        return self.renderer.render(self, batch, train, frame_id, heatmap)
 
     def trace(self, rays_o, rays_d, T_to_world=None):
         """ Traces the model with the given rays. This method is a convenience method for ray-traced inference mode.

@@ -306,7 +306,7 @@ __global__ void computeAdaptiveSampleCounts(
     }
     
     // Normalize gradient (simplified - in practice track max)
-    gradientValue = fminf(gradientValue / threedgut::MultiSampleParameters::GradientThreshold, 1.0f);
+    // gradientValue = fminf(gradientValue / threedgut::MultiSampleParameters::GradientThreshold, 1.0f);
     
     // Determine sample count based on gradient and overlaps
     int baseSamples = threedgut::MultiSampleParameters::BaseSamples;
@@ -315,28 +315,39 @@ __global__ void computeAdaptiveSampleCounts(
     
     // More samples for high gradient or overlapping regions
     int samples = baseSamples;
-    if (gradientValue > 0.5f || overlapCount > 0) {
+    if (gradientValue > 0.5f && overlapCount > 0) {
         samples = baseSamples + (int)((maxSamples - baseSamples) * gradientValue);
         samples = max(samples, baseSamples + overlapCount);
         samples = min(samples, maxSamples);
     }
+    printf("Gradient: %.4f | BaseSamples: %d | OverlapCount: %d | FinalSamples: %d\n",
+        gradientValue, baseSamples, overlapCount, samples);
     
     sampleCounts[idx] = samples;
+
     
     // Generate sample offsets and weights
     if (samples > 1) {
         float range = threedgut::MultiSampleParameters::SampleRange;
-        for (int s = 0; s < samples; s++) {
-            float t = (float)s / (float)(samples - 1);  // 0 to 1
-            float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
-            sampleOffsets[idx * maxSamples + s] = offset;
+        // for (int s = 0; s < samples; s++) {
+        //     float t = (float)s / (float)(samples - 1);  // 0 to 1
+        //     float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
+        //     sampleOffsets[idx * maxSamples + s] = offset;
             
-            // Gaussian weights centered at 0
-            float sigma = range / 3.0f;
-            float weight = expf(-0.5f * (offset * offset) / (sigma * sigma));
-            sampleWeights[idx * maxSamples + s] = weight;
-        }
+        //     // Gaussian weights centered at 0
+        //     float sigma = range / 3.0f;
+        //     float weight = expf(-0.5f * (offset * offset) / (sigma * sigma));
+        //     sampleWeights[idx * maxSamples + s] = weight;
+        // }
         
+        for (int s = 0; s < maxSamples; ++s) {
+            float weight = 1.0f / float(maxSamples);  // Equal weight for each sample
+            sampleWeights[idx * maxSamples + s] = weight;
+        
+            // Print for debugging (optional)
+            // printf("Particle %d, Sample %d, Weight = %f\n", idx, s, weight);
+        }
+
         // Normalize weights
         float weightSum = 0.0f;
         for (int s = 0; s < samples; s++) {

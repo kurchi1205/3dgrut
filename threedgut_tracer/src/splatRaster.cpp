@@ -175,7 +175,8 @@ SplatRaster::trace(uint32_t frameNumber, int numActiveFeatures,
                    TTimestamp startTimestamp,
                    TTimestamp endTimestamp,
                    torch::Tensor sensorsStartPose,
-                   torch::Tensor sensorsEndPose) {
+                   torch::Tensor sensorsEndPose,
+                   torch::optional<torch::Tensor> heatmap = torch::nullopt) {
 
     const int cudaDeviceIndex = rayOrigin.get_device();
     cudaStream_t cudaStream   = at::cuda::getCurrentCUDAStream(cudaDeviceIndex);
@@ -215,6 +216,11 @@ SplatRaster::trace(uint32_t frameNumber, int numActiveFeatures,
     renderParameters.sensorModel = sensorModel;
     renderParameters.sensorState = toSensorState(startTimestamp, sensorsStartPose, endTimestamp, sensorsEndPose);
     renderParameters.objectAABB  = threedgut::BoundingBox{tcnn::vec3{-1e06f, -1e06f, -1e06f}, tcnn::vec3{1e06f, 1e06f, 1e06f}};
+    
+    float* heatmapPtr = nullptr;
+    if (heatmap.has_value()) {
+        heatmapPtr = reinterpret_cast<float*>(voidDataPtr(heatmap.value()));
+    }
 
     ErrorCode status = m_renderer->renderForward(
         renderParameters,
@@ -224,6 +230,7 @@ SplatRaster::trace(uint32_t frameNumber, int numActiveFeatures,
         reinterpret_cast<float*>(voidDataPtr(rayHitDistance)),
         reinterpret_cast<tcnn::vec4*>(voidDataPtr(rayRadianceDensity)),
         reinterpret_cast<int*>(voidDataPtr(particleVisibility)),
+        heatmapPtr,
         m_parameters,
         cudaDeviceIndex,
         cudaStream);

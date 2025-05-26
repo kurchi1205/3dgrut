@@ -62,7 +62,8 @@ public:
           TTimestamp startTimestamp,
           TTimestamp endTimestamp,
           torch::Tensor sensorsStartPose,
-          torch::Tensor sensorsEndPose);
+          torch::Tensor sensorsEndPose,
+          torch::optional<torch::Tensor> heatmap);
 
     std::tuple<torch::Tensor, torch::Tensor>
     traceBwd(uint32_t frameNumber, int numActiveFeatures,

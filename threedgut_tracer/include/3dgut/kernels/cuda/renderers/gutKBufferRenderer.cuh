@@ -14,7 +14,7 @@
 // limitations under the License.
 
 #pragma once
-
+#include <stdio.h>
 #include <3dgut/kernels/cuda/common/rayPayloadBackward.cuh>
 #include <3dgut/renderer/gutRendererParameters.h>
 
@@ -274,7 +274,6 @@ struct GUTKBufferRenderer : Params {
                     i = tileNumBlocksToProcess;
                     break;
                 }
-
                 if (multiSamplingEnabled) {
                     // Multi-sampling using existing Particles methods
                     const int numSamples = sampleCountsPtr[particleData.idx];
@@ -444,82 +443,113 @@ struct GUTKBufferRenderer : Params {
 
                 if (ray.isAlive()) {
 
-                    if (multiSamplingEnabled) {
-                        // Multi-sampling backward pass without modifying Particles class
-                        const int numSamples = sampleCountsPtr[particleData.idx];
-                        const int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
-                        
-                        // Process each sample independently and accumulate gradients
-                        for (int s = 0; s < numSamples; s++) {
-                            const int sampleIdx = particleData.idx * maxSamples + s;
-                            const float depthOffset = sampleOffsetsPtr[sampleIdx];
-                            const float sampleWeight = sampleWeightsPtr[sampleIdx];
-                            
-                            // Create per-sample gradient accumulators
-                            DensityRawParameters sampleDensityGrad = densityRawParametersGrad;
-                            TFeaturesVec sampleFeaturesGrad = TFeaturesVec::zero();
-                            
-                            // Create offset ray for this sample
+                    particles.processHitBwd<Params::PerRayParticleFeatures>(
+                        ray.origin,
+                        ray.direction,
+                        particleData.idx,
+                        particleData.densityParameters,
+                        &densityRawParametersGrad,
+                        particleData.features,
+                        &featuresGrad,
+                        ray.transmittance,
+                        ray.transmittanceBackward,
+                        ray.transmittanceGradient,
+                        ray.features,
+                        ray.featuresBackward,
+                        ray.featuresGradient,
+                        ray.hitT,
+                        ray.hitTBackward,
+                        ray.hitTGradient);
 
-                            tcnn::vec3 offsetRayOrigin = ray.origin;
-                            tcnn::vec3 offsetRayDirection = ray.direction;
-                            float offsetDistance = depthOffset * length(offsetRayDirection);
-                            offsetRayOrigin += offsetDistance * normalize(offsetRayDirection);
-                            
-                            // Temporarily modify ray state for this sample
-                            float originalHitT = ray.hitT;
-                            ray.hitT += offsetDistance;  // Adjust hit distance for offset
-                            
-                            // Use existing processHitBwd with modified ray
-                            particles.processHitBwd<Params::PerRayParticleFeatures>(
-                                offsetRayOrigin,
-                                offsetRayDirection,
-                                particleData.idx,
-                                particleData.densityParameters,
-                                &sampleDensityGrad,
-                                particleData.features,
-                                &sampleFeaturesGrad,
-                                ray.transmittance,
-                                ray.transmittanceBackward,
-                                ray.transmittanceGradient,
-                                ray.features,
-                                ray.featuresBackward,
-                                ray.featuresGradient,
-                                ray.hitT,
-                                ray.hitTBackward,
-                                ray.hitTGradient);
-                            
-                            // Restore original hit distance
-                            ray.hitT = originalHitT;
-                            
-                            // Accumulate weighted gradients
-                            densityRawParametersGrad.density += sampleDensityGrad.density * sampleWeight;
-                            densityRawParametersGrad.position += sampleDensityGrad.position * sampleWeight;
-                            densityRawParametersGrad.quaternion += sampleDensityGrad.quaternion * sampleWeight;
-                            densityRawParametersGrad.scale += sampleDensityGrad.scale * sampleWeight;
-                            featuresGrad += sampleFeaturesGrad * sampleWeight;
-                        }
+                    // if (multiSamplingEnabled) {
+                    //     // Multi-sampling backward pass without modifying Particles class
+                    //     const int numSamples = sampleCountsPtr[particleData.idx];
+                    //     const int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
                         
-                    } else {
-                        // Original single-sample backward pass
-                        particles.processHitBwd<Params::PerRayParticleFeatures>(
-                            ray.origin,
-                            ray.direction,
-                            particleData.idx,
-                            particleData.densityParameters,
-                            &densityRawParametersGrad,
-                            particleData.features,
-                            &featuresGrad,
-                            ray.transmittance,
-                            ray.transmittanceBackward,
-                            ray.transmittanceGradient,
-                            ray.features,
-                            ray.featuresBackward,
-                            ray.featuresGradient,
-                            ray.hitT,
-                            ray.hitTBackward,
-                            ray.hitTGradient);
-                    }
+                    //     // Process each sample independently and accumulate gradients
+                    //     for (int s = 0; s < numSamples; s++) {
+                    //         const int sampleIdx = particleData.idx * maxSamples + s;
+                    //         const float depthOffset = sampleOffsetsPtr[sampleIdx];
+                    //         const float sampleWeight = sampleWeightsPtr[sampleIdx];
+                            
+                    //         // Create per-sample gradient accumulators
+                    //         DensityRawParameters sampleDensityGrad = densityRawParametersGrad;
+                    //         TFeaturesVec sampleFeaturesGrad = TFeaturesVec::zero();
+                            
+                    //         // Create offset ray for this sample
+
+                    //         // printf("ray.origin   - size: %zu bytes\n", sizeof(ray.origin));
+                    //         // printf("ray.direction - size: %zu bytes\n", sizeof(ray.direction));
+                    //         tcnn::vec3 offsetRayOrigin = ray.origin;
+                    //         tcnn::vec3 offsetRayDirection = ray.direction;
+                    //         float offsetDistance = depthOffset * length(offsetRayDirection);
+                    //         offsetRayOrigin += offsetDistance * normalize(offsetRayDirection);
+                            
+                    //         // Temporarily modify ray state for this sample
+                    //         float originalHitT = ray.hitT;
+                    //         ray.hitT += offsetDistance;  // Adjust hit distance for offset
+                            
+                    //         // Use existing processHitBwd with modified ray
+                    //         particles.processHitBwd<Params::PerRayParticleFeatures>(
+                    //             offsetRayOrigin,
+                    //             offsetRayDirection,
+                    //             particleData.idx,
+                    //             particleData.densityParameters,
+                    //             &sampleDensityGrad,
+                    //             particleData.features,
+                    //             &sampleFeaturesGrad,
+                    //             ray.transmittance,
+                    //             ray.transmittanceBackward,
+                    //             ray.transmittanceGradient,
+                    //             ray.features,
+                    //             ray.featuresBackward,
+                    //             ray.featuresGradient,
+                    //             ray.hitT,
+                    //             ray.hitTBackward,
+                    //             ray.hitTGradient);
+                            
+                    //         // Restore original hit distance
+                    //         ray.hitT = originalHitT;
+                            
+                    //         // Accumulate weighted gradients
+                    //         densityRawParametersGrad.density += sampleDensityGrad.density * sampleWeight;
+
+                    //         densityRawParametersGrad.position.x += sampleDensityGrad.position.x * sampleWeight;
+                    //         densityRawParametersGrad.position.y += sampleDensityGrad.position.y * sampleWeight;
+                    //         densityRawParametersGrad.position.z += sampleDensityGrad.position.z * sampleWeight;
+
+                    //         densityRawParametersGrad.quaternion.x += sampleDensityGrad.quaternion.x * sampleWeight;
+                    //         densityRawParametersGrad.quaternion.y += sampleDensityGrad.quaternion.y * sampleWeight;
+                    //         densityRawParametersGrad.quaternion.z += sampleDensityGrad.quaternion.z * sampleWeight;
+                    //         densityRawParametersGrad.quaternion.w += sampleDensityGrad.quaternion.w * sampleWeight;
+
+                    //         densityRawParametersGrad.scale.x += sampleDensityGrad.scale.x * sampleWeight;
+                    //         densityRawParametersGrad.scale.y += sampleDensityGrad.scale.y * sampleWeight;
+                    //         densityRawParametersGrad.scale.z += sampleDensityGrad.scale.z * sampleWeight;
+                    //         featuresGrad += sampleFeaturesGrad * sampleWeight;
+                    //     }
+                    
+                        
+                    // } else {
+                    //     // Original single-sample backward pass
+                    //     particles.processHitBwd<Params::PerRayParticleFeatures>(
+                    //         ray.origin,
+                    //         ray.direction,
+                    //         particleData.idx,
+                    //         particleData.densityParameters,
+                    //         &densityRawParametersGrad,
+                    //         particleData.features,
+                    //         &featuresGrad,
+                    //         ray.transmittance,
+                    //         ray.transmittanceBackward,
+                    //         ray.transmittanceGradient,
+                    //         ray.features,
+                    //         ray.featuresBackward,
+                    //         ray.featuresGradient,
+                    //         ray.hitT,
+                    //         ray.hitTBackward,
+                    //         ray.hitTGradient);
+                    // }
                     
                     if (ray.transmittance < Particles::MinTransmittanceThreshold) {
                         ray.kill();

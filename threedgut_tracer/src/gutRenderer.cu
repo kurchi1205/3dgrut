@@ -264,6 +264,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
                                                         float* worldHitDistanceCudaPtr,
                                                         vec4* radianceDensityCudaPtr,
                                                         int* particlesVisibilityCudaPtr,
+                                                        float* heatmapCudaPtr,
                                                         Parameters& parameters,
                                                         int cudaDeviceIndex,
                                                         cudaStream_t cudaStream) {

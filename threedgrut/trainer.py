@@ -122,6 +122,7 @@ class Trainer3DGRUT:
         self.val_frequency = conf.val_frequency
         """ Validation frequency, in terms on global steps """
 
+        self.batch_heatmaps_tensor = None
         # Setup the trainer and components
         logger.log_rule("Load Datasets")
         self.init_dataloaders(conf)
@@ -708,7 +709,7 @@ class Trainer3DGRUT:
             # Compute the outputs of a single batch
             with torch.cuda.nvtx.range(f"train_{global_step}_fwd"):
                 profilers["inference"].start()
-                outputs = model(gpu_batch, train=True, frame_id=global_step)
+                outputs = model(gpu_batch, train=True, frame_id=global_step, heatmap=self.batch_heatmaps_tensor)
                 profilers["inference"].end()
 
             # Compute the losses of a single batch
@@ -765,6 +766,7 @@ class Trainer3DGRUT:
 
             # Generate the heatmap
             # heatmap_gen.clear()
+            batch_heatmaps = []
             if save_heatmaps:
                 positions = model.get_positions()  # [N, 3]
                 importance = self.strategy.densify_grad_norm_accum / (self.strategy.densify_grad_norm_denom + 1e-8)
@@ -789,9 +791,13 @@ class Trainer3DGRUT:
                     # Step 3: Build heatmap
                     heatmap_gen.clear()
                     heatmap_gen.accumulate(uv, importance)
+                    heatmap_tensor = heatmap_gen.get()
+                    batch_heatmaps.append(heatmap_tensor)
                     # heatmap_gen.normalize()
                     heatmap_gen.save(f"assets/heatmaps/{iter}_{b}_heatmap.jpeg")
 
+            if len(batch_heatmaps) > 0:
+                self.batch_heatmaps_tensor = torch.stack(batch_heatmaps, dim=0)
             # Increment the global step
             self.global_step += 1
             global_step = self.global_step
@@ -889,10 +895,10 @@ class Trainer3DGRUT:
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
 
         for epoch_idx in range(self.n_epochs):
-            if epoch_idx < 6:
+            if epoch_idx < 100:
                 self.run_train_pass(conf)
             else:
-                self.run_train_pass(conf, save_heatmaps=False)
+                self.run_train_pass(conf, save_heatmaps=True)
 
         logger.end_progress(task_name="Training")
 
