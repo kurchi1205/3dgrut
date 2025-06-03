@@ -21,7 +21,6 @@ class ScreenSpaceHeatmap {
         
         // Processing functions
         void normalize(const std::string& method = "minmax");
-        void gaussianBlur(float sigma = 1.0f);
         
         // Getters
         torch::Tensor getHeatmap() const;
@@ -51,3 +50,26 @@ class ScreenSpaceHeatmap {
         void validateInputs(const torch::Tensor& uvCoords, const torch::Tensor& values) const;
         torch::Tensor createHeatmapTensor() const;
 };
+
+void launch_accumulate_heatmap_kernel(
+    const float* uvCoords, 
+    const float* values, 
+    float* heatmap,
+    int N, int H, int W, 
+    float downscale, 
+    cudaStream_t stream
+);
+
+void launch_clear_heatmap_kernel(
+    float* heatmap, 
+    int size, 
+    cudaStream_t stream
+);
+
+void launch_normalize_kernel(
+    float* heatmap, 
+    int size, 
+    float minVal, 
+    float maxVal, 
+    cudaStream_t stream
+);

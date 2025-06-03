@@ -22,6 +22,7 @@
 #endif
 
 #include <3dgut/splatRaster.h>
+#include <3dgut/screenSpaceHeatmap.h>
 
 #include <3dgut/sensors/cameraModels.h>
 
@@ -77,6 +78,44 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("trace", &SplatRaster::trace)
         .def("trace_bwd", &SplatRaster::traceBwd)
         .def("collect_times", &SplatRaster::collectTimes);
+
+
+    py::class_<ScreenSpaceHeatmap>(m, "ScreenSpaceHeatmap")
+        .def(py::init<int, int, int>(),
+             py::arg("imageHeight"), 
+             py::arg("imageWidth"), 
+             py::arg("downscale") = 4,
+             py::arg("useCuda") = true,
+             "Create a new ScreenSpaceHeatmap\n\n"
+             "Args:\n"
+             "    imageHeight: Height of the full resolution image\n"
+             "    imageWidth: Width of the full resolution image\n"
+             "    downscale: Downscale factor for heatmap resolution (default: 4)");
+        
+        .def("accumulate", &ScreenSpaceHeatmap::accumulate,
+            py::arg("uvCoords"), 
+            py::arg("values"),
+            "Accumulate UV coordinates and values into heatmap\n\n"
+            "Args:\n"
+            "    uvCoords: Tensor of shape [N, 2] with UV coordinates in pixel space\n"
+            "    values: Tensor of shape [N] with values to accumulate");
+        
+        .def("clear", &ScreenSpaceHeatmap::clear,
+            "Clear the heatmap (set all values to zero)");
+        
+        .def("getHeatmap", &ScreenSpaceHeatmap::getHeatmap,
+            "Get the current heatmap as a tensor of shape [H, W]");
+
+        .def("normalize", 
+            [](ScreenSpaceHeatmap& self, const std::string& method) {
+                self.normalize(method);
+                return self;  // Return self for chaining
+            },
+            py::arg("method") = "minmax",
+            "Normalize the heatmap\n\n"
+            "Args:\n"
+            "    method: Normalization method ('minmax' or 'zscore')");
+
 
     py::enum_<threedgut::TSensorModel::ShutterType>(m, "ShutterType")
         .value("ROLLING_TOP_TO_BOTTOM", threedgut::TSensorModel::ShutterType::RollingTopToBottomShutter)
