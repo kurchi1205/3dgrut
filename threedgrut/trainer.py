@@ -771,8 +771,8 @@ class Trainer3DGRUT:
                 positions = model.get_positions()  # [N, 3]
                 importance = self.strategy.densify_grad_norm_accum / (self.strategy.densify_grad_norm_denom + 1e-8)
                 intrinsics = torch.tensor(self.train_dataset.K)
-                # importance = importance.squeeze()
-                save_tensor_image(batch["data"][0], f"assets/{iter}_1_image.jpeg")
+                importance = importance.squeeze()
+                # save_tensor_image(batch["data"][0], f"assets/{iter}_1_image.jpeg")
                 for b in range(len(batch["data"])):
                     # Step 1: Get extrinsics for image b
                     heatmap_gen = ScreenSpaceHeatmap(image_size=(800, 800))
@@ -794,7 +794,7 @@ class Trainer3DGRUT:
                     heatmap_tensor = heatmap_gen.get()
                     batch_heatmaps.append(heatmap_tensor)
                     # heatmap_gen.normalize()
-                    heatmap_gen.save(f"assets/heatmaps/{iter}_{b}_heatmap.jpeg")
+                    # heatmap_gen.save(f"assets/heatmaps/{iter}_{b}_heatmap.jpeg")
 
             if len(batch_heatmaps) > 0:
                 self.batch_heatmaps_tensor = torch.stack(batch_heatmaps, dim=0)
@@ -895,7 +895,7 @@ class Trainer3DGRUT:
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
 
         for epoch_idx in range(self.n_epochs):
-            if epoch_idx < 100:
+            if epoch_idx < 1:
                 self.run_train_pass(conf)
             else:
                 self.run_train_pass(conf, save_heatmaps=True)
