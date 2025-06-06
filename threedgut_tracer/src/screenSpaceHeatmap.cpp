@@ -1,4 +1,6 @@
 #include <3dgut/screenSpaceHeatmap.h>
+#include <3dgut/threedgut.cuh>
+
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>

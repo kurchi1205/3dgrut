@@ -320,8 +320,8 @@ __global__ void computeAdaptiveSampleCounts(
         samples = max(samples, baseSamples + overlapCount);
         samples = min(samples, maxSamples);
     }
-    printf("Gradient: %.4f | BaseSamples: %d | OverlapCount: %d | FinalSamples: %d\n",
-        gradientValue, baseSamples, overlapCount, samples);
+    // printf("Gradient: %.4f | BaseSamples: %d | OverlapCount: %d | FinalSamples: %d\n",
+    //     gradientValue, baseSamples, overlapCount, samples);
     
     sampleCounts[idx] = samples;
 

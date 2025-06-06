@@ -261,7 +261,6 @@ SplatRaster::traceBwd(uint32_t frameNumber, int numActiveFeatures,
                       torch::Tensor rayRadianceDensityGradient,
                       torch::Tensor rayHitDistance,
                       torch::Tensor rayHitDistanceGradient) {
-
     const int cudaDeviceIndex = rayOrigin.get_device();
     cudaStream_t cudaStream   = at::cuda::getCurrentCUDAStream(cudaDeviceIndex);
 
@@ -274,11 +273,12 @@ SplatRaster::traceBwd(uint32_t frameNumber, int numActiveFeatures,
 
     torch::Tensor particleDensityGradient  = torch::zeros({particleDensity.size(0), particleDensity.size(1)}, opts);
     torch::Tensor particleRadianceGradient = torch::zeros({particleRadiance.size(0), particleRadiance.size(1)}, opts);
-
+    
     const bool rayBackpropagation = false;
-
+                
     torch::Tensor rayOriginGradient;
     torch::Tensor rayDirectionGradient;
+
     if (rayBackpropagation) {
         rayOriginGradient    = torch::zeros({rayOrigin.size(0), rayOrigin.size(1), rayOrigin.size(2), 3}, opts);
         rayDirectionGradient = torch::zeros({rayDirection.size(0), rayDirection.size(1), rayDirection.size(2), 3}, opts);
@@ -323,7 +323,7 @@ SplatRaster::traceBwd(uint32_t frameNumber, int numActiveFeatures,
         rayBackpropagation ? reinterpret_cast<tcnn::vec3*>(voidDataPtr(rayDirectionGradient)) : nullptr,
         m_parameters, cudaDeviceIndex, cudaStream);
 
-    CUDA_CHECK_LAST(m_logger);
+        CUDA_CHECK_LAST(m_logger);
 
     if (m_enableKernelTimings) {
         timer->stop();

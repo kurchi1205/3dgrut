@@ -247,7 +247,6 @@ class Tracer:
             n_active_features = ctx.n_active_features
             sensor_params = ctx.sensor_params
             sensor_poses = ctx.sensor_poses
-
             particle_density_grd, particle_radiance_grd = ctx.tracer_wrapper.trace_bwd(
                 frame_id,
                 n_active_features,
@@ -285,6 +284,7 @@ class Tracer:
                 mog_sph_grd.contiguous(),
                 None,  # sensor_params
                 None,  # sensor_poses
+                None, # heatmap
             )
 
     def __init__(self, conf):
