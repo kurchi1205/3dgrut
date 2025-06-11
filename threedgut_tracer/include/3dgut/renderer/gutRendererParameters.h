@@ -32,7 +32,7 @@ struct GUTParameters {
 };
 
 struct MultiSampleParameters {
-    static constexpr int MaxSamplesPerGaussian = 8;
+    static constexpr int MaxSamplesPerGaussian = 1250;
     static constexpr int BaseSamples = 1;
     static constexpr float GradientThreshold = 0.3f;
     static constexpr float OverlapThreshold = 0.1f;

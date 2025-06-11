@@ -140,7 +140,7 @@ struct GUTRenderer::GutRenderForwardContext {
         const uint64_t queueHandle = reinterpret_cast<uint64_t>(stream);
         CHECK_STATUS_RETURN(particleSampleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
         CHECK_STATUS_RETURN(particleGradientMagnitudes.resize(numParticles * sizeof(float), queueHandle, logger));
-        CHECK_STATUS_RETURN(overlappingParticleIndices.resize(numParticles * 8 * sizeof(int), queueHandle, logger));
+        CHECK_STATUS_RETURN(overlappingParticleIndices.resize(numParticles * 1250 * sizeof(int), queueHandle, logger));
         CHECK_STATUS_RETURN(overlappingParticleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
         CHECK_STATUS_RETURN(gradientHeatmap.resize(heatmapSize.x * heatmapSize.y * sizeof(float), queueHandle, logger));
         CHECK_STATUS_RETURN(sampleOffsets.resize(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
@@ -273,6 +273,8 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
         m_forwardContext = std::make_unique<GutRenderForwardContext>(cudaStream);
     }
 
+    const bool m_multiSamplingEnabled = (heatmapCudaPtr != nullptr);
+
     DeviceLaunchesLogger deviceLaunchesLogger(m_logger, cudaDeviceIndex, reinterpret_cast<uint64_t>(cudaStream));
     deviceLaunchesLogger.push("render");
 
@@ -297,40 +299,41 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
         params.resolution.y / 4u
     };
 
+
     CHECK_STATUS_RETURN(m_forwardContext->updateMultiSampleBuffers(
         numParticles, heatmapSize, cudaStream, m_logger));
 
 
-    if (m_multiSamplingEnabled && m_forwardContext->particlesPrecomputedFeaturesGradient.size() > 0) {
-        const auto gradientProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::gradient_heatmap"};
+    // if (m_multiSamplingEnabled && m_forwardContext->particlesPrecomputedFeaturesGradient.size() > 0) {
+    //     const auto gradientProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::gradient_heatmap"};
         
-        const uint32_t featureDim = featuresDim();
-        constexpr int threadsPerBlock = 256;
+    //     const uint32_t featureDim = featuresDim();
+    //     constexpr int threadsPerBlock = 256;
         
-        computeGradientMagnitudes<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
-            numParticles,
-            featureDim,
-            (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
-            (float*)m_forwardContext->particleGradientMagnitudes.data()
-        );
-        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+        // computeGradientMagnitudes<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        //     numParticles,
+        //     featureDim,
+        //     (const float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
+        //     (float*)m_forwardContext->particleGradientMagnitudes.data()
+        // );
+        // CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
         
-        CUDA_CHECK_RETURN(cudaMemsetAsync(
-            m_forwardContext->gradientHeatmap.data(), 
-            0, 
-            heatmapSize.x * heatmapSize.y * sizeof(float), 
-            cudaStream), m_logger);
+        // CUDA_CHECK_RETURN(cudaMemsetAsync(
+        //     m_forwardContext->gradientHeatmap.data(), 
+        //     0, 
+        //     heatmapSize.x * heatmapSize.y * sizeof(float), 
+        //     cudaStream), m_logger);
         
-        accumulateGradientHeatmap<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
-            numParticles,
-            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
-            (const float*)m_forwardContext->particleGradientMagnitudes.data(),
-            heatmapSize,
-            4,
-            (float*)m_forwardContext->gradientHeatmap.data()
-        );
-        CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
-    }
+        // accumulateGradientHeatmap<<<div_round_up<uint32_t>(numParticles, threadsPerBlock), threadsPerBlock, 0, cudaStream>>>(
+        //     numParticles,
+        //     (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+        //     (const float*)m_forwardContext->particleGradientMagnitudes.data(),
+        //     heatmapSize,
+        //     4,
+        //     (float*)m_forwardContext->gradientHeatmap.data()
+        // );
+        // CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
+    // }
 
     {
         const auto projectProfile = DeviceLaunchesLogger::ScopePush{deviceLaunchesLogger, "render::project"};
@@ -370,7 +373,7 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
         computeAdaptiveSampleCounts<<<div_round_up<uint32_t>(numParticles, 256), 256, 0, cudaStream>>>(
             numParticles,
             (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
-            (const float*)m_forwardContext->gradientHeatmap.data(),
+            heatmapCudaPtr,
             heatmapSize,
             4,
             (const int*)m_forwardContext->overlappingParticleCounts.data(),

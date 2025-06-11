@@ -680,7 +680,7 @@ class Trainer3DGRUT:
                 logger.warning("Terminating training from GUI window is not supported. Please terminate it from the terminal.")
 
     @torch.cuda.nvtx.range(f"run_train_pass")
-    def run_train_pass(self, conf: DictConfig, save_heatmaps=False):
+    def run_train_pass(self, conf: DictConfig, save_heatmaps=False, heatmap_gen=None):
         """Runs a single train epoch over the dataset."""
         global_step = self.global_step
         model = self.model
@@ -773,9 +773,10 @@ class Trainer3DGRUT:
                 intrinsics = torch.tensor(self.train_dataset.K)
                 importance = importance.squeeze()
                 # save_tensor_image(batch["data"][0], f"assets/{iter}_1_image.jpeg")
+                
                 for b in range(len(batch["data"])):
                     # Step 1: Get extrinsics for image b
-                    heatmap_gen = ScreenSpaceHeatmap(image_size=(800, 800))
+                    heatmap_gen.clear()
                     T_cam_to_world = gpu_batch.T_to_world[b]  # [3, 4]
                     R = T_cam_to_world[:, :3]
                     t = T_cam_to_world[:, 3:]
@@ -785,14 +786,14 @@ class Trainer3DGRUT:
                     extrinsics[:3, :3] = R_inv
                     extrinsics[:3, 3] = t_inv.squeeze()
 
-                    # Step 2: Project 3D positions
-                    uv = project_to_screen_space(positions, torch.tensor(intrinsics, device=R.device), extrinsics)
+                    # # Step 2: Project 3D positions
+                    uv = project_to_screen_space(positions, intrinsics.detach().clone(), extrinsics)
 
                     # Step 3: Build heatmap
-                    heatmap_gen.clear()
                     heatmap_gen.accumulate(uv, importance)
                     heatmap_tensor = heatmap_gen.get()
                     batch_heatmaps.append(heatmap_tensor)
+                    # del heatmap_gen, heatmap_tensor
                     # heatmap_gen.normalize()
                     # heatmap_gen.save(f"assets/heatmaps/{iter}_{b}_heatmap.jpeg")
 
@@ -893,12 +894,12 @@ class Trainer3DGRUT:
 
         # Training loop
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
-
+        heatmap = ScreenSpaceHeatmap(image_size=(800, 800))
         for epoch_idx in range(self.n_epochs):
-            if epoch_idx < 1:
+            if epoch_idx < 10:
                 self.run_train_pass(conf)
             else:
-                self.run_train_pass(conf, save_heatmaps=True)
+                self.run_train_pass(conf, save_heatmaps=True, heatmap_gen=heatmap)
 
         logger.end_progress(task_name="Training")
 

@@ -249,6 +249,7 @@ __global__ void detectOverlappingParticles(
 ) {
     const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= numParticles) return;
+    // printf("idx: %d | numParticles: %d", idx, numParticles);
     
     tcnn::vec2 myPos = projectedPositions[idx];
     float myDepth = depths[idx];
@@ -261,12 +262,13 @@ __global__ void detectOverlappingParticles(
         tcnn::vec2 otherPos = projectedPositions[j];
         float otherDepth = depths[j];
         
-        float distance = length(myPos - otherPos);
+        float distance = abs(length(myPos - otherPos));
         float depthDiff = fabsf(myDepth - otherDepth);
+        // printf("distance: %.4f | depthDiff: %.4f", distance, depthDiff);
         
         if (distance < spatialRadius && depthDiff < depthThreshold) {
-            if (overlapCount < 8) {  // Max 8 overlaps tracked
-                overlappingIndices[idx * 8 + overlapCount] = j;
+            if (overlapCount < 1250) {  // Max 8 overlaps tracked
+                overlappingIndices[idx * 1250 + overlapCount] = j;
                 overlapCount++;
             }
         }
@@ -304,7 +306,7 @@ __global__ void computeAdaptiveSampleCounts(
     if (hx >= 0 && hx < heatmapSize.x && hy >= 0 && hy < heatmapSize.y) {
         gradientValue = gradientHeatmap[hy * heatmapSize.x + hx];
     }
-    
+
     // Normalize gradient (simplified - in practice track max)
     // gradientValue = fminf(gradientValue / threedgut::MultiSampleParameters::GradientThreshold, 1.0f);
     
@@ -315,13 +317,13 @@ __global__ void computeAdaptiveSampleCounts(
     
     // More samples for high gradient or overlapping regions
     int samples = baseSamples;
-    if (gradientValue > 0.5f && overlapCount > 0) {
+    if (gradientValue > 0.0f && overlapCount > 0) {
         samples = baseSamples + (int)((maxSamples - baseSamples) * gradientValue);
         samples = max(samples, baseSamples + overlapCount);
         samples = min(samples, maxSamples);
     }
     // printf("Gradient: %.4f | BaseSamples: %d | OverlapCount: %d | FinalSamples: %d\n",
-    //     gradientValue, baseSamples, overlapCount, samples);
+        // gradientValue, baseSamples, overlapCount, samples);
     
     sampleCounts[idx] = samples;
 
