@@ -1,0 +1,3 @@
+# python render.py --checkpoint /home/3dgrut/runs/lego_3dgut/chair-2606_012806/ckpt_last.pt --out-dir outputs/eval
+python render.py --checkpoint /home/3dgrut/runs/lego_3dgut/lego-0807_031211/ckpt_last.pt --out-dir outputs/eval
+python render_video.py --image_folder /home/3dgrut/outputs/eval/lego_3dgut/lego-0807_032557/ours_20000/renders --output outputs/eval/lego_3dgut/lego-0807_032557/ours_20000/renders/render_video.mp4
