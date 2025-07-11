@@ -304,12 +304,16 @@ class Tracer:
         pass  # no-op for 3DGUT
 
     def render(self, gaussians, gpu_batch: Batch, train=False, frame_id=0, heatmap=None):
+        # print("In tracer: ", heatmap)
         rays_o = gpu_batch.rays_ori
         rays_d = gpu_batch.rays_dir
 
         sensor, poses = Tracer.__create_camera_parameters(gpu_batch)
 
         num_gaussians = gaussians.num_gaussians
+        camera_origin = poses.T_world_sensors[0][:3].to(gaussians.positions.device)  # real camera position
+        approx_view_dirs = torch.nn.functional.normalize(gaussians.positions - camera_origin, dim=-1)
+        # print(approx_view_dirs.size())
         with torch.cuda.nvtx.range(f"model.forward({num_gaussians} gaussians)"):
             (
                 pred_rgba,
@@ -326,12 +330,11 @@ class Tracer:
                 gaussians.get_rotation().contiguous(),
                 gaussians.get_scale().contiguous(),
                 gaussians.get_density().contiguous(),
-                gaussians.get_features().contiguous(),
+                gaussians.get_features_new(approx_view_dirs).contiguous(),
                 sensor,
                 poses,
                 heatmap
             )
-
             pred_rgb = pred_rgba[..., :3].unsqueeze(0).contiguous()
             pred_opacity = pred_rgba[..., 3:].unsqueeze(0).contiguous()
             pred_dist = pred_dist.unsqueeze(0).contiguous()

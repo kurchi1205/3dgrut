@@ -51,12 +51,75 @@ class MixtureOfGaussians(torch.nn.Module):
             "features_albedo",
             "features_specular",
         ]
+        # return [
+        #     "latent_feat",
+        # ]
 
     def get_positions(self) -> torch.Tensor:
         return self.positions
 
-    def get_features(self):
-        return torch.cat((self.features_albedo, self.features_specular), dim=1)
+    def eval_sh(self, degree, dirs):
+        assert degree <= 3, "Only degree up to 3 is supported"
+        x, y, z = dirs[:, 0], dirs[:, 1], dirs[:, 2]
+        N = dirs.shape[0]
+
+        sh_list = []
+
+        # l = 0
+        sh_list.append(torch.ones(N, device=dirs.device))  # 1
+
+        if degree >= 1:
+            sh_list.extend([y, z, x])  # 3
+
+        if degree >= 2:
+            sh_list.extend([
+                x * y,
+                y * z,
+                3 * z**2 - 1,
+                x * z,
+                x**2 - y**2
+            ])  # 5
+
+        if degree >= 3:
+            sh_list.extend([
+                y * (3 * x**2 - y**2),                    # m=-3
+                x * y * z,                                # m=-2
+                y * (5 * z**2 - 1),                       # m=-1
+                z * (5 * z**2 - 3),                       # m=0
+                x * (5 * z**2 - 1),                       # m=1
+                z * (x**2 - y**2),                        # m=2
+                x * (x**2 - 3 * y**2)                     # m=3
+            ])  # 7
+
+        return torch.stack(sh_list, dim=1)
+
+    def get_features_new(self, view_dirs):
+        sh_basis = self.eval_sh(self.max_sh_degree, view_dirs)
+        sh_basis = sh_basis[:, :15]
+
+        specular_coeffs = self.features_specular.view(-1, 15, 3)
+        # view_dependent = torch.sum(sh_basis.unsqueeze(-1) * specular_coeffs, dim=1)
+        
+        # final_rgb = self.features_albedo + view_dependent
+        # print(final_rgb.size())
+        # final_rgb = torch.clamp(final_rgb, 0.0, 1.0)  # Optional: clamp to valid range
+
+        view_dependent_flat = (sh_basis.unsqueeze(-1) * specular_coeffs).view(self.features_specular.size()[0], -1)  # → [N, 45]
+        combined = torch.cat([self.features_albedo, view_dependent_flat], dim=1)
+        return combined
+
+
+    def get_features(self, view_dirs):
+        # return torch.cat((self.features_albedo, self.features_specular), dim=1)
+        # print(view_dirs.size())
+        # print(self.features_albedo.size())
+        sh_basis = self.eval_sh(self.max_sh_degree, view_dirs)
+        view_dependent_features = torch.sum(sh_basis.unsqueeze(-1) * features, dim=1)
+
+        combined = torch.cat((self.features_albedo, self.features_specular), dim=1)
+        input_feat = torch.cat((self.features_albedo, self.features_specular, view_dirs), dim=1)
+        return input_feat  # Residual connection
+        # return self.latent_mlp(torch.cat((self.features_albedo, self.features_specular), dim=1))
 
     def get_scale(self, preactivation=False):
         if preactivation:
@@ -117,6 +180,7 @@ class MixtureOfGaussians(torch.nn.Module):
         if self.feature_type == "sh":
             model_params["features_albedo"] = self.features_albedo
             model_params["features_specular"] = self.features_specular
+            # model_params["latent_mlp"] = self.latent_mlp
 
         return model_params
 
@@ -140,6 +204,8 @@ class MixtureOfGaussians(torch.nn.Module):
             torch.empty([0, specular_dim])
         )  # Features of the higher order SH coefficients [n_gaussians, specular_dim]
         self.max_sh_degree = sh_degree
+        self.latent_dim_inp = 32
+        self.output_dim =  3 + specular_dim
 
         self.conf = conf
         self.scene_extent = scene_extent
@@ -347,6 +413,38 @@ class MixtureOfGaussians(torch.nn.Module):
         self.validate_fields()
 
     @torch.no_grad()
+    def _generate_blue_noise_points(self, num_gaussians: int, xyz_min: float, xyz_max: float, dtype) -> torch.Tensor:
+        """Generate better distributed points using blue noise sampling"""
+        # Stratified sampling for better distribution
+        grid_size = int(np.ceil(num_gaussians ** (1/3)))
+        grid_points = []
+        
+        for i in range(grid_size):
+            for j in range(grid_size):
+                for k in range(grid_size):
+                    if len(grid_points) >= num_gaussians:
+                        break
+                    # Base grid position
+                    base_x = xyz_min + (xyz_max - xyz_min) * i / grid_size
+                    base_y = xyz_min + (xyz_max - xyz_min) * j / grid_size  
+                    base_z = xyz_min + (xyz_max - xyz_min) * k / grid_size
+                    
+                    # Add jitter within cell
+                    cell_size = (xyz_max - xyz_min) / grid_size
+                    jitter = (torch.rand(3, device=self.device) - 0.5) * cell_size * 0.8
+                    
+                    point = torch.tensor([base_x, base_y, base_z], device=self.device) + jitter
+                    grid_points.append(point)
+        
+        # Fill remaining with pure random
+        while len(grid_points) < num_gaussians:
+            point = torch.rand(3, device=self.device) * (xyz_max - xyz_min) + xyz_min
+            grid_points.append(point)
+        
+        return torch.stack(grid_points[:num_gaussians]).to(dtype=dtype)
+
+
+
     def init_from_random_point_cloud(
         self,
         num_gaussians: int = 100_000,
@@ -363,9 +461,12 @@ class MixtureOfGaussians(torch.nn.Module):
         fused_point_cloud = (
             torch.rand((num_gaussians, 3), dtype=dtype, device=self.device) * (xyz_max - xyz_min) + xyz_min
         )
-        # sh albedo in [0, 0.0039]
+        # logger.info(f"Generating random point cloud using blue noise strategy ({num_gaussians})...")
+        # fused_point_cloud = self._generate_blue_noise_points(num_gaussians, xyz_min, xyz_max, dtype)
         fused_color = torch.rand((num_gaussians, 3), dtype=dtype, device=self.device) / 255.0
+        # fused_color = self._initialize_scene_aware_colors(fused_point_cloud, num_gaussians, dtype)
 
+        # sh albedo in [0, 0.0039]
         features_albedo = features_specular = None
         if self.feature_type == "sh":
             features_albedo = fused_color.contiguous()
@@ -374,7 +475,21 @@ class MixtureOfGaussians(torch.nn.Module):
             features_specular = torch.zeros(
                 (num_gaussians, num_specular_features), dtype=dtype, device=self.device
             ).contiguous()
+        # IMPROVED: Better scale initialization with anisotropy
 
+
+        # dist = torch.clamp_min(nearest_neighbor_dist_cpuKD(fused_point_cloud), 1e-3)
+        
+        # # logger.info(f"new scale computation")
+        # # Base scale from nearest neighbors
+        # base_scale = dist * self.conf.model.default_scale_factor
+        # # Add controlled anisotropy for better surface fitting
+        # anisotropy_factor = 1.0 + 0.5 * torch.rand((num_gaussians, 3), device=self.device)
+        # anisotropic_scales = base_scale[..., None] * anisotropy_factor
+        
+        # # Apply scale limits to prevent extreme values
+        # anisotropic_scales = torch.clamp(anisotropic_scales, min=1e-4, max=0.1)
+        # scales = torch.log(anisotropic_scales)
         dist = torch.clamp_min(nearest_neighbor_dist_cpuKD(fused_point_cloud), 1e-3)
         scales = torch.log(dist * self.conf.model.default_scale_factor)[..., None].repeat(1, 3)
 
@@ -391,6 +506,19 @@ class MixtureOfGaussians(torch.nn.Module):
         self.density = torch.nn.Parameter(opacities.to(dtype=dtype, device=self.device))
         self.features_albedo = torch.nn.Parameter(features_albedo.to(dtype=dtype, device=self.device))
         self.features_specular = torch.nn.Parameter(features_specular.to(dtype=dtype, device=self.device))
+        # self.latent_feat = torch.nn.Parameter(
+        #     torch.randn((num_gaussians, self.latent_dim_inp), dtype=dtype, device=self.device) * 0.01
+        # )
+        # # self.latent_mlp = torch.nn.Sequential(
+        # #     torch.nn.Linear(self.output_dim + 3, self.output_dim),
+        # #     # torch.nn.ReLU(),
+        # #     # torch.nn.Linear(64, 32),
+        # #     # torch.nn.ReLU(),
+        # #     # torch.nn.Linear(32, self.output_dim),
+        # # )
+        # # self.latent_mlp = self.latent_mlp.to(self.device)
+        # for name, param in self.latent_mlp.named_parameters():
+        #     print(f"{name}: requires_grad = {param.requires_grad}")
 
         if set_optimizable_parameters:
             self.set_optimizable_parameters()
@@ -611,7 +739,7 @@ class MixtureOfGaussians(torch.nn.Module):
             self.get_density().flatten().to(dtype=export_dtype, device="cpu").detach().numpy().tobytes()
         )
         mogt_config["mog_features"] = (
-            self.get_features().flatten().to(dtype=export_dtype, device="cpu").detach().numpy().tobytes()
+            self.get_features_new().flatten().to(dtype=export_dtype, device="cpu").detach().numpy().tobytes()
         )
         with gzip.open(ingp_filepath := mogt_path, "wb") as f:
             packed = msgpack.packb(mogt_config)

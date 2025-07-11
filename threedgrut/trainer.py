@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 import numpy as np
+import time
 
 import torch
 import torch.utils.data
@@ -707,10 +708,12 @@ class Trainer3DGRUT:
                 self.run_validation_pass(conf)
 
             # Compute the outputs of a single batch
+            st = time.time()
             with torch.cuda.nvtx.range(f"train_{global_step}_fwd"):
                 profilers["inference"].start()
                 outputs = model(gpu_batch, train=True, frame_id=global_step, heatmap=self.batch_heatmaps_tensor)
                 profilers["inference"].end()
+            # print("Forward time: ", time.time() - st)
 
             # Compute the losses of a single batch
             with torch.cuda.nvtx.range(f"train_{global_step}_loss"):
@@ -769,7 +772,7 @@ class Trainer3DGRUT:
             batch_heatmaps = []
             if save_heatmaps:
                 positions = model.get_positions()  # [N, 3]
-                importance = self.strategy.densify_grad_norm_accum / (self.strategy.densify_grad_norm_denom + 1e-8)
+                importance = self.strategy.densify_grad_norm_accum
                 intrinsics = torch.tensor(self.train_dataset.K)
                 importance = importance.squeeze()
                 # save_tensor_image(batch["data"][0], f"assets/{iter}_1_image.jpeg")
@@ -787,7 +790,9 @@ class Trainer3DGRUT:
                     extrinsics[:3, 3] = t_inv.squeeze()
 
                     # # Step 2: Project 3D positions
+                    # st = time.time()
                     uv = project_to_screen_space(positions, intrinsics.detach().clone(), extrinsics)
+                    # print("time to project: ", time.time() - st)
 
                     # Step 3: Build heatmap
                     heatmap_gen.accumulate(uv, importance)
@@ -808,10 +813,10 @@ class Trainer3DGRUT:
                 gpu_batch, outputs, batch_losses, profilers, split="training", iteration=iter
             )
 
-            if "forward_render" in model.renderer.timings:
-                batch_metrics["timings"]["forward_render_cuda"] = model.renderer.timings["forward_render"]
-            if "backward_render" in model.renderer.timings:
-                batch_metrics["timings"]["backward_render_cuda"] = model.renderer.timings["backward_render"]
+            # if "forward_render" in model.renderer.timings:
+            #     batch_metrics["timings"]["forward_render_cuda"] = model.renderer.timings["forward_render"]
+            # if "backward_render" in model.renderer.timings:
+            #     batch_metrics["timings"]["backward_render_cuda"] = model.renderer.timings["backward_render"]
             metrics.append(batch_metrics)
 
             # !!! Below global step has been incremented !!!
@@ -896,7 +901,7 @@ class Trainer3DGRUT:
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
         heatmap = ScreenSpaceHeatmap(image_size=(800, 800))
         for epoch_idx in range(self.n_epochs):
-            if epoch_idx < 10:
+            if epoch_idx < 1:
                 self.run_train_pass(conf)
             else:
                 self.run_train_pass(conf, save_heatmaps=True, heatmap_gen=heatmap)
