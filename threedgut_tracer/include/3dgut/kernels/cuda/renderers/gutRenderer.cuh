@@ -144,7 +144,8 @@ __global__ void renderBackward(threedgut::RenderParameters params,
                                // Multi-sampling parameters
                                const int* __restrict__ sampleCounts,
                                const float* __restrict__ sampleOffsets,
-                               const float* __restrict__ sampleWeights) {
+                               const float* __restrict__ sampleWeights
+                            ) {
 
     auto ray = initializeBackwardRay<TGUTRenderer::TRayPayloadBackward>(params,
                                                                         sensorRayOriginPtr,
@@ -238,6 +239,16 @@ __global__ void accumulateGradientHeatmap(
 
 //find  overlapping particles based on the depth and spatial distance, for now 8 other overlapping particles
 
+float getGPUClockRate(int deviceId = 0) {
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, deviceId);
+    // Convert from kHz to kHz (it's already in kHz)
+    return (float)prop.clockRate;
+}
+
+__device__ float clockRateDevice;
+
+
 __global__ void detectOverlappingParticles(
     const uint32_t numParticles,
     const tcnn::vec2* __restrict__ projectedPositions,
@@ -249,33 +260,104 @@ __global__ void detectOverlappingParticles(
 ) {
     const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= numParticles) return;
-    // printf("idx: %d | numParticles: %d", idx, numParticles);
-    
+
+    const int tileSize = blockDim.x;
+
+    __shared__ tcnn::vec2 sharedPos[1024];  // Support up to 1024 threads per block
+    __shared__ float sharedDepth[1024];
+
     tcnn::vec2 myPos = projectedPositions[idx];
     float myDepth = depths[idx];
+
     int overlapCount = 0;
     
-    // Check all other particles (simplified - in practice use spatial grid)
-    for (uint32_t j = 0; j < numParticles; j++) {
-        if (j == idx) continue;
-        
-        tcnn::vec2 otherPos = projectedPositions[j];
-        float otherDepth = depths[j];
-        
-        float distance = abs(length(myPos - otherPos));
-        float depthDiff = fabsf(myDepth - otherDepth);
-        // printf("distance: %.4f | depthDiff: %.4f", distance, depthDiff);
-        
-        if (distance < spatialRadius && depthDiff < depthThreshold) {
-            if (overlapCount < 1250) {  // Max 8 overlaps tracked
-                overlappingIndices[idx * 1250 + overlapCount] = j;
-                overlapCount++;
+    clock_t start = clock();
+    for (uint32_t tileStart = 0; tileStart < numParticles; tileStart += tileSize) {
+        // Load tile into shared memory
+        uint32_t j = tileStart + threadIdx.x;
+        if (j < numParticles) {
+            sharedPos[threadIdx.x] = projectedPositions[j];
+            sharedDepth[threadIdx.x] = depths[j];
+        }
+        __syncthreads();
+
+        // Compare against all particles in the tile
+        for (int t = 0; t < tileSize; ++t) {
+            uint32_t otherIdx = tileStart + t;
+            if (otherIdx >= numParticles || otherIdx == idx) continue;
+
+            float dist = length(myPos - sharedPos[t]);
+            float depthDiff = fabsf(myDepth - sharedDepth[t]);
+
+            if (dist < spatialRadius && depthDiff < depthThreshold) {
+                if (overlapCount <= 1) {
+                    overlappingIndices[idx * 1 + overlapCount] = otherIdx;
+                    overlapCount++;
+                }
             }
         }
+        __syncthreads();
     }
+
+    clock_t end = clock();
     
+    // Print timing for first few threads to avoid spam
+    float milliseconds = ((float)(end - start)) / (clockRateDevice);
+    
+    // if (idx < 1) {
+    //     printf("Thread %d: Loop took %.3f ms for %d particles (found %d overlaps)\n", 
+    //            idx, milliseconds, numParticles, overlapCount);
+    // }
     overlappingCounts[idx] = overlapCount;
 }
+
+
+// __global__ void detectOverlappingParticles(
+//     const uint32_t numParticles,
+//     const tcnn::vec2* __restrict__ projectedPositions,
+//     const float* __restrict__ depths,
+//     const float spatialRadius,
+//     const float depthThreshold,
+//     int* __restrict__ overlappingIndices,
+//     int* __restrict__ overlappingCounts
+// ) {
+//     const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (idx >= numParticles) return;
+//     // printf("idx: %d | numParticles: %d", idx, numParticles);
+    
+//     tcnn::vec2 myPos = projectedPositions[idx];
+//     float myDepth = depths[idx];
+//     int overlapCount = 0;
+    
+//     // Check all other particles (simplified - in practice use spatial grid)
+//     clock_t start = clock();
+//     for (uint32_t j = 0; j < numParticles; j++) {
+//         if (j == idx) continue;
+        
+//         tcnn::vec2 otherPos = projectedPositions[j];
+//         float otherDepth = depths[j];
+        
+//         float distance = abs(length(myPos - otherPos));
+//         float depthDiff = fabsf(myDepth - otherDepth);
+//         // printf("distance: %.4f | depthDiff: %.4f", distance, depthDiff);
+        
+//         if (distance < spatialRadius && depthDiff < depthThreshold) {
+//             if (overlapCount < 1024) {  // Max 8 overlaps tracked
+//                 overlappingIndices[idx * 1024 + overlapCount] = j;
+//                 overlapCount++;
+//             }
+//         }
+//     }
+//     clock_t end = clock();
+    
+//     // Print timing for first few threads to avoid spam
+//     if (idx < 1) {
+//         printf("Thread %d: Loop took %lld clock cycles for %d particles\n", 
+//                idx, (long long)(end - start), numParticles);
+//     }
+    
+//     overlappingCounts[idx] = overlapCount;
+// }
 
 
 // calculate the number of samples from gradient and number of overlapping particles. Range is set to 10 percent of the depth range.
@@ -288,7 +370,6 @@ __global__ void computeAdaptiveSampleCounts(
     const float* __restrict__ gradientHeatmap,
     const tcnn::uvec2 heatmapSize,
     const int downscale,
-    const int* __restrict__ overlappingCounts,
     int* __restrict__ sampleCounts,
     float* __restrict__ sampleOffsets,
     float* __restrict__ sampleWeights
@@ -313,51 +394,85 @@ __global__ void computeAdaptiveSampleCounts(
     // Determine sample count based on gradient and overlaps
     int baseSamples = threedgut::MultiSampleParameters::BaseSamples;
     int maxSamples = threedgut::MultiSampleParameters::MaxSamplesPerGaussian;
-    int overlapCount = overlappingCounts[idx];
+    // int overlapCount = overlappingCounts[idx];
+    // int maxOverlapCount = 1024;
     
     // More samples for high gradient or overlapping regions
     int samples = baseSamples;
-    if (gradientValue > 0.0f && overlapCount > 0) {
-        samples = baseSamples + (int)((maxSamples - baseSamples) * gradientValue);
-        samples = max(samples, baseSamples + overlapCount);
-        samples = min(samples, maxSamples);
+    // float normalizedOverlap = fminf((float)overlapCount / (float)maxOverlapCount, 1.0f);
+    // normalizedOverlap = powf(normalizedOverlap, 0.7f);
+
+
+    if (gradientValue > 0.0f) {
+        float combinedFactor = 0.1f + 0.8f * gradientValue;;
+        samples = samples + (int)((maxSamples - samples) * combinedFactor);
     }
-    // printf("Gradient: %.4f | BaseSamples: %d | OverlapCount: %d | FinalSamples: %d\n",
-        // gradientValue, baseSamples, overlapCount, samples);
+    // printf("Gradient: %.4f | BaseSamples: %d | FinalSamples: %d\n",
+    //     gradientValue, baseSamples, samples);
     
     sampleCounts[idx] = samples;
 
     
     // Generate sample offsets and weights
     if (samples > 1) {
-        float range = threedgut::MultiSampleParameters::SampleRange;
-        // for (int s = 0; s < samples; s++) {
+        // float range = threedgut::MultiSampleParameters::SampleRange;
+        // // for (int s = 0; s < samples; s++) {
+        // //     float t = (float)s / (float)(samples - 1);  // 0 to 1
+        // //     float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
+        // //     sampleOffsets[idx * maxSamples + s] = offset;
+            
+        // //     // Gaussian weights centered at 0
+        // //     float sigma = range / 3.0f;
+        // //     float weight = expf(-0.5f * (offset * offset) / (sigma * sigma));
+        // //     sampleWeights[idx * maxSamples + s] = weight;
+        // // }
+        // for (int s = 0; s < samples; ++s) {
         //     float t = (float)s / (float)(samples - 1);  // 0 to 1
         //     float offset = (t - 0.5f) * 2.0f * range;   // -range to +range
-        //     sampleOffsets[idx * maxSamples + s] = offset;
             
-        //     // Gaussian weights centered at 0
-        //     float sigma = range / 3.0f;
-        //     float weight = expf(-0.5f * (offset * offset) / (sigma * sigma));
+        //     sampleOffsets[idx * maxSamples + s] = offset;
+        //     float weight = 1.0f / float(samples);  // Equal weight for each sample
         //     sampleWeights[idx * maxSamples + s] = weight;
-        // }
+
+            
         
-        for (int s = 0; s < maxSamples; ++s) {
-            float weight = 1.0f / float(maxSamples);  // Equal weight for each sample
+        //     // Print for debugging (optional)
+        //     printf("Particle %d, Sample %d, Weight = %f\n, Offset = %f", idx, s, weight, offset);
+        // }
+
+
+        float baseRange = 0.02f;  // Base range for NeRF scenes (1% of typical scene)
+        
+        // Scale range based on gradient - more range for high gradient areas
+        float adaptiveRange = baseRange * (1.0f + gradientValue * 5.0f);
+        
+        // Clamp to reasonable bounds for NeRF
+        adaptiveRange = fmaxf(adaptiveRange, 0.005f);  // Min 0.5% of scene
+        adaptiveRange = fminf(adaptiveRange, 0.5f);   // Max 5% of scene
+        
+        for (int s = 0; s < samples; ++s) {
+            float t = (float)s / (float)(samples - 1);  // 0 to 1
+            float offset = (t - 0.5f) * 2.0f * adaptiveRange;   // Use adaptive range
+            // float offset = t * adaptiveRange;   // Use adaptive range
+            
+            sampleOffsets[idx * maxSamples + s] = offset;
+            float weight = 1.0f / float(samples);  // Equal weight for each sample
             sampleWeights[idx * maxSamples + s] = weight;
         
-            // Print for debugging (optional)
-            // printf("Particle %d, Sample %d, Weight = %f\n", idx, s, weight);
+            // Debug print (remove in production)
+            // if (idx < 5 && s < 3) {  // Only print for first few particles/samples
+            //     printf("Particle %d, Sample %d, Weight = %f, Offset = %f, Range = %f\n", 
+            //            idx, s, weight, offset, adaptiveRange);
+            // }
         }
-
-        // Normalize weights
-        float weightSum = 0.0f;
-        for (int s = 0; s < samples; s++) {
-            weightSum += sampleWeights[idx * maxSamples + s];
-        }
-        for (int s = 0; s < samples; s++) {
-            sampleWeights[idx * maxSamples + s] /= weightSum;
-        }
+        // // Normalize weights
+        // float weightSum = 0.0f;
+        // for (int s = 0; s < samples; s++) {
+        //     weightSum += sampleWeights[idx * maxSamples + s];
+        // }
+        // for (int s = 0; s < samples; s++) {
+        //     sampleWeights[idx * maxSamples + s] /= weightSum;
+        // }
     } else {
         sampleOffsets[idx * maxSamples] = 0.0f;
         sampleWeights[idx * maxSamples] = 1.0f;

@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <3dgut/kernels/cuda/common/rayPayloadBackward.cuh>
 #include <3dgut/renderer/gutRendererParameters.h>
+#include <3dgut/kernels/cuda/common/cudaMath.cuh>
+
 
 struct HitParticle {
     static constexpr float InvalidHitT = -1.0f;
@@ -212,12 +214,15 @@ struct GUTKBufferRenderer : Params {
         if constexpr (Backward && Params::PerRayParticleFeatures) {
             particles.initializeFeaturesGradient(parametersGradient);
         }
-
+        // printf("Buffer Size: %d ", Params::KHitBufferSize);
+        // if constexpr (Backward) {
+        //     printf("Running in backward mode\n");
+        // }
         // New eval functions with multi-sampling
         if constexpr (Backward && (Params::KHitBufferSize == 0)) {
-            evalBackwardNoKBufferWithMultiSamplingNoClass(ray, particles, tileParticleRangeIndices, tileNumBlocksToProcess, tileNumParticlesToProcess, tileThreadIdx,
-                                                        sortedTileParticleIdxPtr, particleFeaturesBuffer, particleFeaturesGradientBuffer,
-                                                        multiSamplingEnabled, sampleCountsPtr, sampleOffsetsPtr, sampleWeightsPtr);
+            evalBackwardNoKBuffer(ray, particles, tileParticleRangeIndices, tileNumBlocksToProcess, tileNumParticlesToProcess, tileThreadIdx,
+                                                        sortedTileParticleIdxPtr, particleFeaturesBuffer, particleFeaturesGradientBuffer
+                                                    );
         } else {
             evalKBufferWithMultiSamplingNoClass(ray, particles, tileParticleRangeIndices, tileNumBlocksToProcess, tileNumParticlesToProcess, tileThreadIdx,
                                             sortedTileParticleIdxPtr, particleFeaturesBuffer, particleFeaturesGradientBuffer,
@@ -245,6 +250,7 @@ struct GUTKBufferRenderer : Params {
         __shared__ PrefetchedParticleData prefetchedParticlesData[GUTParameters::Tiling::BlockSize];
 
         HitParticleKBuffer<Params::KHitBufferSize> hitParticleKBuffer;
+        // printf("Buffer Size: %d ", Params::KHitBufferSize);
 
         for (uint32_t i = 0; i < tileNumBlocksToProcess; i++, tileNumParticlesToProcess -= GUTParameters::Tiling::BlockSize) {
 
@@ -267,6 +273,7 @@ struct GUTKBufferRenderer : Params {
             __syncthreads();
 
             // Process fetched particles
+            // printf("ray_x=%.4f, ray_y=%.4f\n", ray.tMinMax.x, ray.tMinMax.y);
             for (int j = 0; ray.isAlive() && j < min(GUTParameters::Tiling::BlockSize, tileNumParticlesToProcess); j++) {
 
                 const PrefetchedParticleData particleData = prefetchedParticlesData[j];
@@ -275,17 +282,47 @@ struct GUTKBufferRenderer : Params {
                     break;
                 }
                 if (multiSamplingEnabled) {
+                    // HitParticle hitParticle;
+                    // hitParticle.idx = particleData.idx;
+                    // if (particles.densityHit(ray.origin,
+                    //                         ray.direction,
+                    //                         particleData.densityParameters,
+                    //                         hitParticle.alpha,
+                    //                         hitParticle.hitT)){
+                        
+                    //     if (particleData.idx == 10) {
+                    //         printf("In multisampling Particle %d, hitT=%.4f, alpha=%.4f, ray_x=%.4f, ray_y=%.4f\n", 
+                    //             particleData.idx, hitParticle.hitT, hitParticle.alpha, ray.tMinMax.x, ray.tMinMax.y);
+                    //     }       
+                    //     if ((hitParticle.hitT > ray.tMinMax.x) &&
+                    //     (hitParticle.hitT < ray.tMinMax.y)) {
+                        
+                    //         if (hitParticleKBuffer.full()) {
+                    //             processHitParticle(ray,
+                    //                             hitParticleKBuffer.closestHit(hitParticle),
+                    //                             particles,
+                    //                             particleFeaturesBuffer,
+                    //                             particleFeaturesGradientBuffer);
+                    //         }
+                    //         hitParticleKBuffer.insert(hitParticle);
+                    //     }
+                    // }
                     // Multi-sampling using existing Particles methods
                     const int numSamples = sampleCountsPtr[particleData.idx];
                     const int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
+                    // printf("in multisampling: samples %d\n", numSamples);
                     
                     // Accumulate contributions from all samples
                     float totalAlpha = 0.0f;
                     float avgHitT = 0.0f;
                     float totalWeight = 0.0f;
                     
-                    //moves the original ray by different offset and check whether they are hitting the gaussian
-                    
+                    // //moves the original ray by different offset and check whether they are hitting the gaussian
+                    float bestAlpha = 0.0f;
+                    float bestHitT = ray.tMinMax.y + 1e10f; // Large number ensures any valid hit is closer
+                    tcnn::vec3 ray_origin = ray.origin;
+                    // // float bestHitTNorm = 0.0f; // Large number ensures any valid hit is closer
+                    // // bool validHit = false;
                     for (int s = 0; s < numSamples; s++) {
                         const int sampleIdx = particleData.idx * maxSamples + s;
                         const float depthOffset = sampleOffsetsPtr[sampleIdx];
@@ -297,58 +334,123 @@ struct GUTKBufferRenderer : Params {
                         
                         // Adjust ray origin based on depth offset
                         // This effectively evaluates the Gaussian at different depths
-                        float offsetDistance = depthOffset * length(offsetRayDirection);
-                        offsetRayOrigin += offsetDistance * normalize(offsetRayDirection);
+                        // float offsetDistance = depthOffset * length(offsetRayDirection);
+                        // offsetRayOrigin += offsetDistance * normalize(offsetRayDirection);
+                        // printf("Depth offset: %.4f", depthOffset);
+                        tcnn::vec3 samplePosition = ray.origin + depthOffset * ray.direction;
+
+                        // printf("Sample Position: (%.6f, %.6f, %.6f), Ray Origin: (%.6f, %.6f, %.6f)\n",
+                        // samplePosition.x, samplePosition.y, samplePosition.z,
+                        // ray.origin.x, ray.origin.y, ray.origin.z);
+
+                        // const int sampleIdx = particleData.idx * maxSamples + s;
+                        // const float depthOffset = sampleOffsetsPtr[sampleIdx];
+                        // const float sampleWeight = sampleWeightsPtr[sampleIdx];
                         
-                        // Use existing densityHit with offset ray
+                        // Use const to match the signature cross(const float3&, const float3&)
+                        // const float3 rayDir = make_float3(ray.direction.x, ray.direction.y, ray.direction.z);
+                        // float3 worldUp = make_float3(0.0f, 1.0f, 0.0f);
+                        // worldUp = fabs(rayDir.y) < 0.99f ? make_float3(0.0f, 1.0f, 0.0f) : make_float3(1.0f, 0.0f, 0.0f);
+                        
+                        // // Now this should work without ambiguity
+                        // const float3 rayRight_f3 = safe_normalize(make_float3(
+                        //     rayDir.y * worldUp.z - rayDir.z * worldUp.y,  // rayDir.y * 0 - rayDir.z * 1 = -rayDir.z
+                        //     rayDir.z * worldUp.x - rayDir.x * worldUp.z,  // rayDir.z * 0 - rayDir.x * 0 = 0
+                        //     rayDir.x * worldUp.y - rayDir.y * worldUp.x   // rayDir.x * 1 - rayDir.y * 0 = rayDir.x
+                        // ));
+                        
+
+                        // const float3 rayUp_f3 = make_float3(
+                        //     rayDir.y * rayRight_f3.z - rayDir.z * rayRight_f3.y,
+                        //     rayDir.z * rayRight_f3.x - rayDir.x * rayRight_f3.z,
+                        //     rayDir.x * rayRight_f3.y - rayDir.y * rayRight_f3.x
+                        // );
+
+                        // // Convert back to tcnn::vec3
+                        // tcnn::vec3 rayRight = tcnn::vec3(rayRight_f3.x, rayRight_f3.y, rayRight_f3.z);
+                        // tcnn::vec3 rayUp = tcnn::vec3(rayUp_f3.x, rayUp_f3.y, rayUp_f3.z);
+                        
+                        // // Sample in circle
+                        // float angle = (float)s / (float)numSamples * 2.0f * M_PI;
+                        // float radius = abs(depthOffset);
+                        // tcnn::vec3 perpOffset = radius * (cos(angle) * rayRight + sin(angle) * rayUp);
+                        // // tcnn::vec3 samplePosition = ray.origin + perpOffset;
+                        // samplePosition = ray.origin + perpOffset;
+                        // tcnn::vec3 newDir = normalize(ray.origin - samplePosition);
+                        // // Use existing densityHit with offset ray
+                        // // HitParticle sampleHitParticle;
+                        // // sampleHitParticle.idx = sampleIdx;
+
                         float sampleAlpha;
                         float sampleHitT;
-                        if (particles.densityHit(offsetRayOrigin,
-                                            offsetRayDirection,
+                        
+                        if (particles.densityHit(samplePosition,
+                                            ray.direction,
                                             particleData.densityParameters,
                                             sampleAlpha,
                                             sampleHitT)) {
                             
                             // Adjust hit distance back to original ray space
-                            sampleHitT += offsetDistance;
+                            // float globalHitT = depthOffset + sampleHitT;
+
+                            // // Calculate the actual hit point in 3D space
+                            // tcnn::vec3 hitPoint = samplePosition + sampleHitT * ray.direction;
                             
-                            if (sampleHitT > ray.tMinMax.x && sampleHitT < ray.tMinMax.y) {
-                                totalAlpha += sampleAlpha * sampleWeight;
-                                avgHitT += sampleHitT * sampleWeight;
-                                totalWeight += sampleWeight;
+                            // // Project back onto the original ray to get the correct depth
+                            // tcnn::vec3 rayToHit = hitPoint - ray.origin;
+                            
+                            // Manual dot product: rayToHit · ray.direction
+                            // float globalHitT = rayToHit.x * ray.direction.x + 
+                            //                 rayToHit.y * ray.direction.y + 
+                            //                 rayToHit.z * ray.direction.z;
+
+                            // if (particleData.idx == 0) {
+                            //     printf("in multisampling: Particle %d, Sample %d: hitT=%.4f, globalhitT=%.4f, alpha=%.4f, ray_x=%.4f, ray_y=%.4f\n", 
+                            //         particleData.idx, s, sampleHitT, globalHitT, sampleAlpha, ray.tMinMax.x, ray.tMinMax.y);
+                            // }
+                            // if ((sampleHitParticle.hitT > ray.tMinMax.x) &&
+                            //     (sampleHitParticle.hitT < ray.tMinMax.y)) {
+                                
+                            //     if (hitParticleKBuffer.full()) {
+                            //         processHitParticle(ray,
+                            //                         hitParticleKBuffer.closestHit(sampleHitParticle),
+                            //                         particles,
+                            //                         particleFeaturesBuffer,
+                            //                         particleFeaturesGradientBuffer);
+                            //     }
+                            //     hitParticleKBuffer.insert(sampleHitParticle);
+                            // }
+
+                            // if (globalHitT > ray.tMinMax.x && globalHitT < ray.tMinMax.y) {
+                            totalAlpha += sampleAlpha * sampleWeight;
+                            avgHitT += sampleHitT * sampleWeight;
+                            totalWeight += sampleWeight;
+                            
+
+                            float weightedAlpha = sampleAlpha;
+
+                            // Use hitT from sample with max weighted alpha
+                            if (weightedAlpha > bestAlpha) {
+                                bestAlpha = weightedAlpha;
+                                bestHitT = sampleHitT;
+                                ray_origin = samplePosition;
+                                // printf("New best sample: s=%d, offset=%.6f, alpha=%.6f, hitT=%.6f, samplePos=(%.4f, %.4f, %.4f)\n",
+                                //         s, depthOffset, bestAlpha, bestHitT,
+                                //         samplePosition.x, samplePosition.y, samplePosition.z);
                             }
+                            // }
                         }
                     }
                     
                     // Create hit particle with combined alpha
-                    if (totalWeight > 0) {
-                        HitParticle hitParticle;
-                        hitParticle.idx = particleData.idx;
-                        hitParticle.alpha = totalAlpha / totalWeight;
-                        hitParticle.hitT = avgHitT / totalWeight;
-                        if (hitParticle.hitT > ray.tMinMax.x && hitParticle.hitT < ray.tMinMax.y) {
-                            if (hitParticleKBuffer.full()) {
-                                processHitParticle(ray,
-                                                hitParticleKBuffer.closestHit(hitParticle),
-                                                particles,
-                                                particleFeaturesBuffer,
-                                                particleFeaturesGradientBuffer);
-                            }
-                            hitParticleKBuffer.insert(hitParticle);
-                        }
-                    }
-                } else {
-                    // Original single-sample logic
                     HitParticle hitParticle;
                     hitParticle.idx = particleData.idx;
-                    if (particles.densityHit(ray.origin,
-                                            ray.direction,
-                                            particleData.densityParameters,
-                                            hitParticle.alpha,
-                                            hitParticle.hitT) &&
-                        (hitParticle.hitT > ray.tMinMax.x) &&
-                        (hitParticle.hitT < ray.tMinMax.y)) {
-
+                    // hitParticle.alpha = totalAlpha;
+                    // hitParticle.hitT = avgHitT;
+                    hitParticle.alpha = bestAlpha;
+                    hitParticle.hitT = bestHitT;
+                    ray.origin = ray_origin;
+                    if (hitParticle.hitT > ray.tMinMax.x && hitParticle.hitT < ray.tMinMax.y) {
                         if (hitParticleKBuffer.full()) {
                             processHitParticle(ray,
                                             hitParticleKBuffer.closestHit(hitParticle),
@@ -358,11 +460,41 @@ struct GUTKBufferRenderer : Params {
                         }
                         hitParticleKBuffer.insert(hitParticle);
                     }
+                    
+                } 
+                else {
+                    // Original single-sample logic
+                    HitParticle hitParticle;
+                    hitParticle.idx = particleData.idx;
+                    if (particles.densityHit(ray.origin,
+                                            ray.direction,
+                                            particleData.densityParameters,
+                                            hitParticle.alpha,
+                                            hitParticle.hitT)){
+                        
+                        // if (particleData.idx == 10) {
+                        //     printf("Particle %d, hitT=%.4f, alpha=%.4f, ray_x=%.4f, ray_y=%.4f\n", 
+                        //         particleData.idx, hitParticle.hitT, hitParticle.alpha, ray.tMinMax.x, ray.tMinMax.y);
+                        // }       
+                        if ((hitParticle.hitT > ray.tMinMax.x) &&
+                        (hitParticle.hitT < ray.tMinMax.y)) {
+                        
+                        if (hitParticleKBuffer.full()) {
+                                processHitParticle(ray,
+                                                hitParticleKBuffer.closestHit(hitParticle),
+                                                particles,
+                                                particleFeaturesBuffer,
+                                                particleFeaturesGradientBuffer);
+                            }
+                        hitParticleKBuffer.insert(hitParticle);
+                        }
+                    }   
                 }
             }
         }
 
         if constexpr (Params::KHitBufferSize > 0) {
+            // printf("Buffer Size: %d ", Params::KHitBufferSize);
             for (int i = 0; ray.isAlive() && (i < hitParticleKBuffer.numHits()); ++i) {
                 processHitParticle(ray,
                                 hitParticleKBuffer[Params::KHitBufferSize - hitParticleKBuffer.numHits() + i],
@@ -374,21 +506,15 @@ struct GUTKBufferRenderer : Params {
     }
 
     template <typename TRay>
-    static inline __device__ void evalBackwardNoKBufferWithMultiSamplingNoClass(
-        TRay& ray,
-        Particles& particles,
-        const tcnn::uvec2& tileParticleRangeIndices,
-        uint32_t tileNumBlocksToProcess,
-        uint32_t tileNumParticlesToProcess,
-        const uint32_t tileThreadIdx,
-        const uint32_t* __restrict__ sortedTileParticleIdxPtr,
-        const TFeaturesVec* __restrict__ particleFeaturesBuffer,
-        TFeaturesVec* __restrict__ particleFeaturesGradientBuffer,
-        bool multiSamplingEnabled,
-        const int* __restrict__ sampleCountsPtr,
-        const float* __restrict__ sampleOffsetsPtr,
-        const float* __restrict__ sampleWeightsPtr) {
-        
+    static inline __device__ void evalBackwardNoKBuffer(TRay& ray,
+                                                        Particles& particles,
+                                                        const tcnn::uvec2& tileParticleRangeIndices,
+                                                        uint32_t tileNumBlocksToProcess,
+                                                        uint32_t tileNumParticlesToProcess,
+                                                        const uint32_t tileThreadIdx,
+                                                        const uint32_t* __restrict__ sortedTileParticleIdxPtr,
+                                                        const TFeaturesVec* __restrict__ particleFeaturesBuffer,
+                                                        TFeaturesVec* __restrict__ particleFeaturesGradientBuffer) {
         static_assert(Backward && (Params::KHitBufferSize == 0), "Optimized path for backward pass with no KBuffer");
 
         using namespace threedgut;
@@ -442,7 +568,6 @@ struct GUTKBufferRenderer : Params {
                 TFeaturesVec featuresGrad = TFeaturesVec::zero();
 
                 if (ray.isAlive()) {
-
                     particles.processHitBwd<Params::PerRayParticleFeatures>(
                         ray.origin,
                         ray.direction,
@@ -460,97 +585,6 @@ struct GUTKBufferRenderer : Params {
                         ray.hitT,
                         ray.hitTBackward,
                         ray.hitTGradient);
-
-                    // if (multiSamplingEnabled) {
-                    //     // Multi-sampling backward pass without modifying Particles class
-                    //     const int numSamples = sampleCountsPtr[particleData.idx];
-                    //     const int maxSamples = MultiSampleParameters::MaxSamplesPerGaussian;
-                        
-                    //     // Process each sample independently and accumulate gradients
-                    //     for (int s = 0; s < numSamples; s++) {
-                    //         const int sampleIdx = particleData.idx * maxSamples + s;
-                    //         const float depthOffset = sampleOffsetsPtr[sampleIdx];
-                    //         const float sampleWeight = sampleWeightsPtr[sampleIdx];
-                            
-                    //         // Create per-sample gradient accumulators
-                    //         DensityRawParameters sampleDensityGrad = densityRawParametersGrad;
-                    //         TFeaturesVec sampleFeaturesGrad = TFeaturesVec::zero();
-                            
-                    //         // Create offset ray for this sample
-
-                    //         // printf("ray.origin   - size: %zu bytes\n", sizeof(ray.origin));
-                    //         // printf("ray.direction - size: %zu bytes\n", sizeof(ray.direction));
-                    //         tcnn::vec3 offsetRayOrigin = ray.origin;
-                    //         tcnn::vec3 offsetRayDirection = ray.direction;
-                    //         float offsetDistance = depthOffset * length(offsetRayDirection);
-                    //         offsetRayOrigin += offsetDistance * normalize(offsetRayDirection);
-                            
-                    //         // Temporarily modify ray state for this sample
-                    //         float originalHitT = ray.hitT;
-                    //         ray.hitT += offsetDistance;  // Adjust hit distance for offset
-                            
-                    //         // Use existing processHitBwd with modified ray
-                    //         particles.processHitBwd<Params::PerRayParticleFeatures>(
-                    //             offsetRayOrigin,
-                    //             offsetRayDirection,
-                    //             particleData.idx,
-                    //             particleData.densityParameters,
-                    //             &sampleDensityGrad,
-                    //             particleData.features,
-                    //             &sampleFeaturesGrad,
-                    //             ray.transmittance,
-                    //             ray.transmittanceBackward,
-                    //             ray.transmittanceGradient,
-                    //             ray.features,
-                    //             ray.featuresBackward,
-                    //             ray.featuresGradient,
-                    //             ray.hitT,
-                    //             ray.hitTBackward,
-                    //             ray.hitTGradient);
-                            
-                    //         // Restore original hit distance
-                    //         ray.hitT = originalHitT;
-                            
-                    //         // Accumulate weighted gradients
-                    //         densityRawParametersGrad.density += sampleDensityGrad.density * sampleWeight;
-
-                    //         densityRawParametersGrad.position.x += sampleDensityGrad.position.x * sampleWeight;
-                    //         densityRawParametersGrad.position.y += sampleDensityGrad.position.y * sampleWeight;
-                    //         densityRawParametersGrad.position.z += sampleDensityGrad.position.z * sampleWeight;
-
-                    //         densityRawParametersGrad.quaternion.x += sampleDensityGrad.quaternion.x * sampleWeight;
-                    //         densityRawParametersGrad.quaternion.y += sampleDensityGrad.quaternion.y * sampleWeight;
-                    //         densityRawParametersGrad.quaternion.z += sampleDensityGrad.quaternion.z * sampleWeight;
-                    //         densityRawParametersGrad.quaternion.w += sampleDensityGrad.quaternion.w * sampleWeight;
-
-                    //         densityRawParametersGrad.scale.x += sampleDensityGrad.scale.x * sampleWeight;
-                    //         densityRawParametersGrad.scale.y += sampleDensityGrad.scale.y * sampleWeight;
-                    //         densityRawParametersGrad.scale.z += sampleDensityGrad.scale.z * sampleWeight;
-                    //         featuresGrad += sampleFeaturesGrad * sampleWeight;
-                    //     }
-                    
-                        
-                    // } else {
-                    //     // Original single-sample backward pass
-                    //     particles.processHitBwd<Params::PerRayParticleFeatures>(
-                    //         ray.origin,
-                    //         ray.direction,
-                    //         particleData.idx,
-                    //         particleData.densityParameters,
-                    //         &densityRawParametersGrad,
-                    //         particleData.features,
-                    //         &featuresGrad,
-                    //         ray.transmittance,
-                    //         ray.transmittanceBackward,
-                    //         ray.transmittanceGradient,
-                    //         ray.features,
-                    //         ray.featuresBackward,
-                    //         ray.featuresGradient,
-                    //         ray.hitT,
-                    //         ray.hitTBackward,
-                    //         ray.hitTGradient);
-                    // }
-                    
                     if (ray.transmittance < Particles::MinTransmittanceThreshold) {
                         ray.kill();
                     }
@@ -558,7 +592,7 @@ struct GUTKBufferRenderer : Params {
 
                 if constexpr (!Params::PerRayParticleFeatures) {
                     particles.processHitBwdUpdateFeaturesGradient(particleData.idx, featuresGrad,
-                                                                particleFeaturesGradientBuffer, tileThreadIdx);
+                                                                  particleFeaturesGradientBuffer, tileThreadIdx);
                 }
                 particles.processHitBwdUpdateDensityGradient(particleData.idx, densityRawParametersGrad, tileThreadIdx);
             }

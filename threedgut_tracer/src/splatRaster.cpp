@@ -150,7 +150,8 @@ SplatRaster::SplatRaster(const nlohmann::json& config)
     , m_renderer(std::make_unique<GUTRenderer>(config, m_logger)) {
 
     const auto& renderConfig = config["render"];
-    m_enableKernelTimings    = renderConfig.value("enable_kernel_timings", false);
+    // m_enableKernelTimings    = renderConfig.value("enable_kernel_timings", false);
+    m_enableKernelTimings    = true;
 
     m_parameters.valuesBuffer.resize(sizeof(m_parameters.values), 0, m_logger);
     m_parameters.parametersBuffer.resize(sizeof(m_parameters.parameters), 0, m_logger);
@@ -239,6 +240,8 @@ SplatRaster::trace(uint32_t frameNumber, int numActiveFeatures,
 
     if (timer) {
         timer->stop();
+        float ms = timer->collect();  // or timer->elapsedMs() depending on the method
+        // std::cout << "[Trace] renderForward took " << ms << " ms" << std::endl;
     }
 
     return std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>(rayRadianceDensity, rayHitDistance, rayHitCount, particleVisibility);

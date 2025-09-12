@@ -120,7 +120,7 @@ struct GUTRenderer::GutRenderForwardContext {
         particlesPrecomputedFeaturesGradient.clear(processQueueHandle, logger);
         scanningWorkingBuffer.clear(processQueueHandle, logger);
         particleSampleCounts.clear(processQueueHandle, logger);
-        particleGradientMagnitudes.clear(processQueueHandle, logger);
+        // particleGradientMagnitudes.clear(processQueueHandle, logger);
         overlappingParticleIndices.clear(processQueueHandle, logger);
         overlappingParticleCounts.clear(processQueueHandle, logger);
         sampleOffsets.clear(processQueueHandle, logger);
@@ -135,7 +135,7 @@ struct GUTRenderer::GutRenderForwardContext {
     CudaBuffer sortingWorkingBuffer;
 
     CudaBuffer particleSampleCounts;              // int [N] samples per particle
-    CudaBuffer particleGradientMagnitudes;        // float [N] gradient magnitudes
+    // CudaBuffer particleGradientMagnitudes;        // float [N] gradient magnitudes
     CudaBuffer overlappingParticleIndices;        // int [N*K] indices of overlapping particles
     CudaBuffer overlappingParticleCounts;         // int [N] count of overlaps per particle
     // CudaBuffer gradientHeatmap;                   // float [H/downscale, W/downscale]
@@ -145,14 +145,14 @@ struct GUTRenderer::GutRenderForwardContext {
     Status updateMultiSampleBuffers(int numParticles, uvec2 heatmapSize, cudaStream_t stream, const Logger& logger) {
         const uint64_t queueHandle = reinterpret_cast<uint64_t>(stream);
         CHECK_STATUS_RETURN(particleSampleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
-        CHECK_STATUS_RETURN(particleGradientMagnitudes.resize(numParticles * sizeof(float), queueHandle, logger));
-        CHECK_STATUS_RETURN(overlappingParticleIndices.resize(numParticles * 1024 * sizeof(int), queueHandle, logger));
+        // CHECK_STATUS_RETURN(particleGradientMagnitudes.resize(numParticles * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(overlappingParticleIndices.enlarge(numParticles * 1 * sizeof(int), queueHandle, logger));
         CHECK_STATUS_RETURN(overlappingParticleCounts.resize(numParticles * sizeof(int), queueHandle, logger));
         // CHECK_STATUS_RETURN(gradientHeatmap.resize(heatmapSize.x * heatmapSize.y * sizeof(float), queueHandle, logger));
-        CHECK_STATUS_RETURN(sampleOffsets.resize(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
-        CHECK_STATUS_RETURN(sampleWeights.resize(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(sampleOffsets.enlarge(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
+        CHECK_STATUS_RETURN(sampleWeights.enlarge(numParticles * MultiSampleParameters::MaxSamplesPerGaussian * sizeof(float), queueHandle, logger));
         
-        // Initialize to zeros
+        // // Initialize to zeros
         CUDA_CHECK_RETURN(cudaMemsetAsync(particleSampleCounts.data(), 1, numParticles * sizeof(int), stream), logger);
         // CUDA_CHECK_RETURN(cudaMemsetAsync(gradientHeatmap.data(), 0, heatmapSize.x * heatmapSize.y * sizeof(float), stream), logger);
         return Status();
@@ -366,15 +366,18 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
 
     // Multi-sampling preprocessing
     if (m_multiSamplingEnabled) {
-        detectOverlappingParticles<<<div_round_up<uint32_t>(numParticles, 256), 256, 0, cudaStream>>>(
-            numParticles,
-            (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
-            (const float*)m_forwardContext->particlesGlobalDepth.data(),
-            10.0f,  // spatial radius
-            0.1f,   // depth threshold
-            (int*)m_forwardContext->overlappingParticleIndices.data(),
-            (int*)m_forwardContext->overlappingParticleCounts.data()
-        );
+        float clockRateKHz = getGPUClockRate(); // e.g., 1530000 kHz = 1.53 GHz
+        cudaMemcpyToSymbol(clockRateDevice, &clockRateKHz, sizeof(float)); // pass to device
+
+        // detectOverlappingParticles<<<div_round_up<uint32_t>(numParticles, GUTParameters::Tiling::BlockSize), GUTParameters::Tiling::BlockSize, 0, cudaStream>>>(
+        //     numParticles,
+        //     (const vec2*)m_forwardContext->particlesProjectedPosition.data(),
+        //     (const float*)m_forwardContext->particlesGlobalDepth.data(),
+        //     10.0f,  // spatial radius
+        //     0.1f,   // depth threshold
+        //     (int*)m_forwardContext->overlappingParticleIndices.data(),
+        //     (int*)m_forwardContext->overlappingParticleCounts.data()
+        // );
         
         computeAdaptiveSampleCounts<<<div_round_up<uint32_t>(numParticles, 256), 256, 0, cudaStream>>>(
             numParticles,
@@ -382,7 +385,6 @@ threedgut::Status threedgut::GUTRenderer::renderForward(const RenderParameters& 
             heatmapCudaPtr,
             heatmapSize,
             4,
-            (const int*)m_forwardContext->overlappingParticleCounts.data(),
             (int*)m_forwardContext->particleSampleCounts.data(),
             (float*)m_forwardContext->sampleOffsets.data(),
             (float*)m_forwardContext->sampleWeights.data()
@@ -616,9 +618,12 @@ threedgut::Status threedgut::GUTRenderer::renderBackward(const RenderParameters&
             (float*)m_forwardContext->particlesPrecomputedFeaturesGradient.data(),
             parameters.m_dptrGradientsBuffer,
             // Multi-sampling parameters - use same configuration from forward pass
-            m_multiSamplingEnabled ? (const int*)m_forwardContext->particleSampleCounts.data() : nullptr,
-            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleOffsets.data() : nullptr,
-            m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr
+            nullptr,
+            nullptr,
+            nullptr
+            // m_multiSamplingEnabled ? (const int*)m_forwardContext->particleSampleCounts.data() : nullptr,
+            // m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleOffsets.data() : nullptr,
+            // m_multiSamplingEnabled ? (const float*)m_forwardContext->sampleWeights.data() : nullptr
         );
         CUDA_CHECK_STREAM_RETURN(cudaStream, m_logger);
     }

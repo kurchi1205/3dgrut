@@ -1,5 +1,6 @@
 import os
 import torch
+import time
 from torchvision.utils import save_image
 
 class ScreenSpaceHeatmap:
